@@ -97,6 +97,10 @@ async def upload_docx(
     file: UploadFile = File(...),
     csrf_token: str = Form(...),
     document_date: str = Form(default=""),
+    period_start: str = Form(default=""),
+    period_end: str = Form(default=""),
+    night_mode: str | None = Form(default=None),
+    rollover_hour: int = Form(default=12),
     session: Session = Depends(db_session),
 ):
     require_login(request)
@@ -107,7 +111,7 @@ async def upload_docx(
     path = Path("data/inbox") / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-    params = {"document_date": document_date} if document_date else None
+    params = _upload_params(document_date, period_start, period_end, night_mode, rollover_hour)
     job = create_job(session, "process-docx", str(path), params=params)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
@@ -248,6 +252,10 @@ def queue_export(request: Request, csrf_token: str = Form(...), session: Session
 async def api_upload(
     file: UploadFile = File(...),
     document_date: str = Form(default=""),
+    period_start: str = Form(default=""),
+    period_end: str = Form(default=""),
+    night_mode: str | None = Form(default=None),
+    rollover_hour: int = Form(default=12),
     session: Session = Depends(db_session),
 ):
     settings = get_settings()
@@ -256,9 +264,29 @@ async def api_upload(
     path = Path("data/inbox") / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-    params = {"document_date": document_date} if document_date else None
+    params = _upload_params(document_date, period_start, period_end, night_mode, rollover_hour)
     job = create_job(session, "process-docx", str(path), params=params)
     return {"ok": True, "job_id": job.id, "filename": filename}
+
+
+def _upload_params(
+    document_date: str,
+    period_start: str,
+    period_end: str,
+    night_mode: str | None,
+    rollover_hour: int,
+) -> dict | None:
+    params: dict = {}
+    if period_start:
+        params["period_start"] = period_start
+        if period_end:
+            params["period_end"] = period_end
+        if night_mode:
+            params["night_mode"] = True
+        params["rollover_hour"] = rollover_hour
+    elif document_date:
+        params["document_date"] = document_date
+    return params or None
 
 
 @router.get("/api/jobs/{job_id}", dependencies=[Depends(require_api_auth)])

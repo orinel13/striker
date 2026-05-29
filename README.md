@@ -134,6 +134,17 @@ python -m app.cli import-docx data/inbox/strikes29.docx --default-year 2026
 
 Если документ вообще без даты, укажи дату суток события через `--document-date`. Координаты вида `5415616 7395885` автоматически конвертируются из СК-42/Гаусс-Крюгер в WGS84; исходные northing/easting и источник координат сохраняются в базе и отчёте.
 
+## Импорт документов за ночь с одной даты на другую
+
+Для календарного дня используй `--document-date`. Для ночных актов, например ночь с 28 на 29 мая, используй период:
+
+```bash
+python -m app.cli inspect-docx data/inbox/strikes.docx --period-start 2026-05-28 --period-end 2026-05-29 --night-mode
+python -m app.cli import-docx data/inbox/strikes.docx --period-start 2026-05-28 --period-end 2026-05-29 --night-mode
+```
+
+В ночном режиме времена `18:00-23:59` относятся к `--period-start`, а `00:00-11:59` относятся к `--period-end`. Значение `--rollover-hour 12` означает, что все времена до 12:00 считаются утренней частью конечной даты периода.
+
 ## CLI
 
 ```bash

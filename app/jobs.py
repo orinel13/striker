@@ -51,8 +51,21 @@ def run_job(session: Session, job: Job) -> None:
             params = json.loads(job.params_json or "{}")
             document_date = date.fromisoformat(params["document_date"]) if params.get("document_date") else None
             default_year = int(params["default_year"]) if params.get("default_year") else None
+            period_start = date.fromisoformat(params["period_start"]) if params.get("period_start") else None
+            period_end = date.fromisoformat(params["period_end"]) if params.get("period_end") else None
+            night_mode = bool(params.get("night_mode"))
+            rollover_hour = int(params.get("rollover_hour", 12))
             _update(session, job, 10, "import-docx")
-            import_docx(session, job.input_path, document_date=document_date, default_year=default_year)
+            import_docx(
+                session,
+                job.input_path,
+                document_date=document_date,
+                default_year=default_year,
+                period_start=period_start,
+                period_end=period_end,
+                night_mode=night_mode,
+                rollover_hour=rollover_hour,
+            )
             session.commit()
             _update(session, job, 30, "fetch-firms")
             fetch_firms_for_all_cases(session)

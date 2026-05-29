@@ -2,7 +2,11 @@ param(
   [Parameter(Mandatory=$true)][string]$ServerUrl,
   [Parameter(Mandatory=$true)][string]$ApiToken,
   [Parameter(Mandatory=$true)][string]$FilePath,
-  [string]$DocumentDate = ""
+  [string]$DocumentDate = "",
+  [string]$PeriodStart = "",
+  [string]$PeriodEnd = "",
+  [switch]$NightMode,
+  [int]$RolloverHour = 12
 )
 
 if (!(Test-Path -LiteralPath $FilePath)) { throw "File does not exist: $FilePath" }
@@ -12,6 +16,10 @@ $base = $ServerUrl.TrimEnd("/")
 $headers = @{ Authorization = "Bearer $ApiToken" }
 $form = @{ file = Get-Item -LiteralPath $FilePath }
 if ($DocumentDate) { $form.document_date = $DocumentDate }
+if ($PeriodStart) { $form.period_start = $PeriodStart }
+if ($PeriodEnd) { $form.period_end = $PeriodEnd }
+if ($NightMode) { $form.night_mode = "1" }
+if ($RolloverHour -ne 12) { $form.rollover_hour = "$RolloverHour" }
 $response = Invoke-RestMethod -Method Post -Uri "$base/api/documents/upload" -Headers $headers -Form $form
 Write-Host "job_id=$($response.job_id)"
 

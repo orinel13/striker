@@ -74,15 +74,32 @@ def cmd_worker_loop(_args) -> None:
 
 def cmd_import_docx(args) -> None:
     init_db()
-    document_date = date.fromisoformat(args.document_date) if args.document_date else None
+    document_date, period_start, period_end = _date_args(args)
     with session_scope() as session:
-        cases = import_docx(session, args.path, document_date=document_date, default_year=args.default_year)
+        cases = import_docx(
+            session,
+            args.path,
+            document_date=document_date,
+            default_year=args.default_year,
+            period_start=period_start,
+            period_end=period_end,
+            night_mode=args.night_mode,
+            rollover_hour=args.rollover_hour,
+        )
     print(f"Imported {len(cases)} cases.")
 
 
 def cmd_inspect_docx(args) -> None:
-    document_date = date.fromisoformat(args.document_date) if args.document_date else None
-    rows = parse_docx_strike_rows(args.path, document_date=document_date, default_year=args.default_year)
+    document_date, period_start, period_end = _date_args(args)
+    rows = parse_docx_strike_rows(
+        args.path,
+        document_date=document_date,
+        default_year=args.default_year,
+        period_start=period_start,
+        period_end=period_end,
+        night_mode=args.night_mode,
+        rollover_hour=args.rollover_hour,
+    )
     print("row_index | date | time/window | oblast | place | lat | lon | warnings")
     for row in rows:
         if row.time_window_start and row.time_window_end:
@@ -166,14 +183,43 @@ def cmd_reject_channel(args) -> None:
 
 def cmd_create_job_from_docx(args) -> None:
     init_db()
-    params = {}
-    if args.document_date:
-        params["document_date"] = args.document_date
-    if args.default_year:
-        params["default_year"] = args.default_year
+    params = _job_params_from_args(args)
     with session_scope() as session:
         job = create_job(session, "process-docx", args.path, params=params or None)
         print(job.id)
+
+
+def _date_args(args) -> tuple[date | None, date | None, date | None]:
+    document_date = date.fromisoformat(args.document_date) if getattr(args, "document_date", None) else None
+    period_start = date.fromisoformat(args.period_start) if getattr(args, "period_start", None) else None
+    period_end = date.fromisoformat(args.period_end) if getattr(args, "period_end", None) else None
+    if period_start:
+        document_date = None
+    return document_date, period_start, period_end
+
+
+def _job_params_from_args(args) -> dict:
+    params = {}
+    for name in ["document_date", "period_start", "period_end"]:
+        value = getattr(args, name, None)
+        if value:
+            params[name] = value
+    if getattr(args, "default_year", None):
+        params["default_year"] = args.default_year
+    if getattr(args, "night_mode", False):
+        params["night_mode"] = True
+    if getattr(args, "rollover_hour", None) != 12:
+        params["rollover_hour"] = args.rollover_hour
+    return params
+
+
+def _add_docx_date_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--document-date", help="Document/event date in YYYY-MM-DD format")
+    parser.add_argument("--default-year", type=int, help="Year for short dates like 20.05")
+    parser.add_argument("--period-start", help="Period start date in YYYY-MM-DD format")
+    parser.add_argument("--period-end", help="Period end date in YYYY-MM-DD format")
+    parser.add_argument("--night-mode", action="store_true", help="Treat 00:00-11:59 as the period end date")
+    parser.add_argument("--rollover-hour", type=int, default=12, help="Night-mode rollover hour, default 12")
 
 
 def cmd_cleanup_exports(_args) -> None:
@@ -220,13 +266,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_load_places)
     p = sub.add_parser("import-docx")
     p.add_argument("path")
-    p.add_argument("--document-date", help="Document/event date in YYYY-MM-DD format")
-    p.add_argument("--default-year", type=int, help="Year for short dates like 20.05")
+    _add_docx_date_args(p)
     p.set_defaults(func=cmd_import_docx)
     p = sub.add_parser("inspect-docx")
     p.add_argument("path")
-    p.add_argument("--document-date", help="Document/event date in YYYY-MM-DD format")
-    p.add_argument("--default-year", type=int, help="Year for short dates like 20.05")
+    _add_docx_date_args(p)
     p.set_defaults(func=cmd_inspect_docx)
     p = sub.add_parser("approve-channel")
     p.add_argument("username")
@@ -236,8 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_reject_channel)
     p = sub.add_parser("create-job-from-docx")
     p.add_argument("path")
-    p.add_argument("--document-date", help="Document/event date in YYYY-MM-DD format")
-    p.add_argument("--default-year", type=int, help="Year for short dates like 20.05")
+    _add_docx_date_args(p)
     p.set_defaults(func=cmd_create_job_from_docx)
     return parser
 

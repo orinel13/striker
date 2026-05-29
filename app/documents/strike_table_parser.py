@@ -31,6 +31,14 @@ class ParsedStrikeRow:
     parser_warnings: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class DocumentPeriod:
+    start_date: date
+    end_date: date | None = None
+    night_mode: bool = False
+    rollover_hour: int = 12
+
+
 DASH_RE = re.compile(r"[\u2010-\u2015\u2212]")
 SPACE_RE = re.compile(r"\s+")
 SHORT_TOKEN_RE = re.compile(r"\b(?P<a>\d{1,2})[.:](?P<b>\d{2})(?:[.,])?\b")
@@ -87,7 +95,17 @@ def _parse_time_token(token: str) -> tuple[int, int] | None:
     return None
 
 
-def parse_time_or_range(text: str, base_date: date | None) -> dict:
+def choose_event_date_for_time(hour: int, period: DocumentPeriod | None, fallback_date: date | None) -> date | None:
+    if period is None:
+        return fallback_date
+    if not period.night_mode:
+        return period.start_date
+    if period.end_date is not None and hour < period.rollover_hour:
+        return period.end_date
+    return period.start_date
+
+
+def parse_time_or_range(text: str, base_date: date | None, period: DocumentPeriod | None = None) -> dict:
     normalized = normalize_time_text(text)
     warnings: list[str] = []
     result = {
@@ -110,9 +128,12 @@ def parse_time_or_range(text: str, base_date: date | None) -> dict:
         end_text = _format_hhmm(end_h, end_m)
         result["time_range_start"] = start_text
         result["time_range_end"] = end_text
-        if base_date:
-            start_dt = datetime.combine(base_date, time(start_h, start_m))
-            end_date = base_date + timedelta(days=1) if (end_h, end_m) < (start_h, start_m) else base_date
+        start_date = choose_event_date_for_time(start_h, period, base_date)
+        end_date = choose_event_date_for_time(end_h, period, base_date)
+        if start_date and end_date:
+            if period is None and base_date and (end_h, end_m) < (start_h, start_m):
+                end_date = base_date + timedelta(days=1)
+            start_dt = datetime.combine(start_date, time(start_h, start_m))
             end_dt = datetime.combine(end_date, time(end_h, end_m))
             result["time_window_start"] = start_dt - timedelta(hours=1)
             result["time_window_end"] = end_dt + timedelta(hours=1)
@@ -122,8 +143,9 @@ def parse_time_or_range(text: str, base_date: date | None) -> dict:
     hour, minute = _parse_time_token(time_tokens[-1]) or (0, 0)
     event_time = _format_hhmm(hour, minute)
     result["event_time_local"] = event_time
-    if base_date:
-        center = datetime.combine(base_date, time(hour, minute))
+    event_date = choose_event_date_for_time(hour, period, base_date)
+    if event_date:
+        center = datetime.combine(event_date, time(hour, minute))
         result["time_window_start"] = center - timedelta(hours=1)
         result["time_window_end"] = center + timedelta(hours=1)
     else:
@@ -227,10 +249,15 @@ def parse_docx_strike_rows(
     path: Path | str,
     document_date: date | None = None,
     default_year: int | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    night_mode: bool = False,
+    rollover_hour: int = 12,
 ) -> list[ParsedStrikeRow]:
     doc = Document(str(path))
     rows: list[ParsedStrikeRow] = []
-    current_date = document_date
+    period = DocumentPeriod(period_start, period_end, night_mode, rollover_hour) if period_start else None
+    current_date = period_start or document_date
     row_index = 0
     for table in doc.tables:
         for docx_row in table.rows:
@@ -244,6 +271,8 @@ def parse_docx_strike_rows(
             row_date = parse_short_date_token(time_cell, default_year)
             if row_date:
                 current_date = row_date
+            elif period:
+                row_date = period.start_date
             elif document_date:
                 row_date = document_date
             elif current_date:
@@ -251,7 +280,13 @@ def parse_docx_strike_rows(
             elif SHORT_TOKEN_RE.search(time_cell) and default_year is None:
                 warnings.append("missing document date")
             time_text = _time_text_without_date(time_cell, row_date)
-            time_info = parse_time_or_range(time_text, row_date)
+            time_info = parse_time_or_range(time_text, row_date, period=period)
+            if period and time_info["time_window_start"]:
+                row_date = time_info["time_window_start"].date()
+                if time_info["event_time_local"]:
+                    token = time_info["event_time_local"]
+                    hour = int(token.split(":", 1)[0])
+                    row_date = choose_event_date_for_time(hour, period, row_date)
             warnings.extend(time_info["parser_warnings"])
             oblast = parse_oblast(detail_cell)
             place, reference = parse_place_or_reference(detail_cell)
@@ -281,4 +316,3 @@ def parse_docx_strike_rows(
                 parsed.parser_warnings.append("sk42 coordinate outside Ukraine or invalid")
             rows.append(parsed)
     return rows
-

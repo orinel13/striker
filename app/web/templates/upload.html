@@ -4,7 +4,12 @@
 <div class="panel">
   <form method="post" action="/upload" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <p class="muted">Для обычного календарного документа заполни "Дата документа". Для ночи с 28 на 29 заполни начало и конец периода, затем включи ночной период.</p>
     <p><label>Дата документа/суток события<br><input type="date" name="document_date"></label></p>
+    <p><label>Начало периода<br><input type="date" name="period_start"></label></p>
+    <p><label>Конец периода<br><input type="date" name="period_end"></label></p>
+    <p><label><input type="checkbox" name="night_mode" value="1"> Ночной период / переход через полночь</label></p>
+    <p><label>Граница ночных часов<br><input type="number" name="rollover_hour" value="12" min="0" max="23"></label></p>
     <p><input type="file" name="file" accept=".docx" required></p>
     <button>Upload and process</button>
   </form>

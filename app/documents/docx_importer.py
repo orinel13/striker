@@ -69,12 +69,24 @@ def import_docx(
     path: Path | str,
     document_date: date | None = None,
     default_year: int | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    night_mode: bool = False,
+    rollover_hour: int = 12,
 ) -> list[Case]:
     settings = get_settings()
     source = str(path)
     gazetteer = Gazetteer(session)
     cases: list[Case] = []
-    parsed_rows = parse_docx_strike_rows(path, document_date=document_date, default_year=default_year)
+    parsed_rows = parse_docx_strike_rows(
+        path,
+        document_date=document_date,
+        default_year=default_year,
+        period_start=period_start,
+        period_end=period_end,
+        night_mode=night_mode,
+        rollover_hour=rollover_hour,
+    )
     if parsed_rows:
         for parsed in parsed_rows:
             case = _case_from_parsed(session, parsed, source, gazetteer)
