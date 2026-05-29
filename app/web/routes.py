@@ -4,14 +4,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal
 from app.jobs import create_job
-from sqlalchemy import func
+from app.matching.case_matcher import localize_message_time
 
 from app.models import Case, CaseMatch, Channel, ChannelCandidate, Export, Job, Message
 from app.security import (
@@ -187,49 +188,127 @@ def messages(request: Request, session: Session = Depends(db_session)):
 
 
 @router.get("/review")
-def review(request: Request, session: Session = Depends(db_session)):
+def review(
+    request: Request,
+    status: str = "pending",
+    priority: str | None = None,
+    case_id: int | None = None,
+    place: str | None = None,
+    channel: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    session: Session = Depends(db_session),
+):
     require_login(request)
-    rows = (
+    allowed_statuses = {"pending", "approved", "auto_approved", "rejected", "all"}
+    status = status if status in allowed_statuses else "pending"
+    counts = dict(
+        session.query(CaseMatch.review_status, func.count(CaseMatch.id))
+        .filter(CaseMatch.match_type == "telegram", CaseMatch.message_id.isnot(None))
+        .group_by(CaseMatch.review_status)
+        .all()
+    )
+    base = (
         session.query(CaseMatch, Case, Message, Channel)
         .join(Case, Case.id == CaseMatch.case_id)
         .join(Message, Message.id == CaseMatch.message_id)
         .join(Channel, Channel.id == Message.channel_id)
         .filter(CaseMatch.match_type == "telegram")
-        .order_by(Case.place_name, Case.id, CaseMatch.priority, CaseMatch.total_score.desc())
+    )
+    if status != "all":
+        base = base.filter(CaseMatch.review_status == status)
+    if priority:
+        base = base.filter(CaseMatch.priority == priority)
+    if case_id:
+        base = base.filter(Case.id == case_id)
+    if place:
+        like = f"%{place}%"
+        base = base.filter(or_(Case.place_name.like(like), Case.reference_text.like(like)))
+    if channel:
+        like = f"%{channel}%"
+        base = base.filter(or_(Channel.username.like(like), Channel.title.like(like)))
+    total_filtered = base.count()
+    priority_order = CaseMatch.priority.asc()
+    query_rows = (
+        base.order_by(Case.place_name, Case.id, priority_order, CaseMatch.total_score.desc(), Message.posted_at.asc())
+        .offset(offset)
+        .limit(min(limit, 500))
         .all()
     )
-    return render(request, "review.html", {"rows": rows})
+    rows = [
+        (match, case, message, channel, localize_message_time(message.posted_at))
+        for match, case, message, channel in query_rows
+    ]
+    groups = []
+    grouped: dict[tuple[int, str], list] = {}
+    for row in rows:
+        _match, case, _message, _channel, _posted_local = row
+        key = (case.id, case.place_name or case.reference_text or "Неустановленный населённый пункт")
+        grouped.setdefault(key, []).append(row)
+    for (cid, label), items in grouped.items():
+        groups.append({"case_id": cid, "label": label, "rows": items, "count": len(items)})
+    if status == "pending":
+        groups.sort(key=lambda group: (-group["count"], group["case_id"]))
+    else:
+        groups.sort(key=lambda group: group["case_id"])
+    return render(
+        request,
+        "review.html",
+        {
+            "groups": groups,
+            "counts": {
+                "pending": counts.get("pending", 0),
+                "approved": counts.get("approved", 0),
+                "auto_approved": counts.get("auto_approved", 0),
+                "rejected": counts.get("rejected", 0),
+                "all": sum(counts.values()),
+            },
+            "filters": {"status": status, "priority": priority or "", "case_id": case_id or "", "place": place or "", "channel": channel or "", "limit": limit, "offset": offset},
+            "total_filtered": total_filtered,
+            "next_offset": offset + limit if offset + limit < total_filtered else None,
+            "pending_review": counts.get("pending", 0),
+        },
+    )
 
 
-def _set_review_status(match_id: int, status: str, session: Session) -> None:
+def _set_review_status(match_id: int, status: str, session: Session) -> CaseMatch:
     match = session.get(CaseMatch, match_id)
     if not match:
         raise HTTPException(404)
     match.review_status = status
+    return match
+
+
+def _review_response(request: Request, match: CaseMatch):
+    accept = request.headers.get("accept", "")
+    requested = request.headers.get("x-requested-with", "")
+    if requested == "fetch" or "application/json" in accept:
+        return JSONResponse({"ok": True, "match_id": match.id, "review_status": match.review_status})
+    return RedirectResponse("/review", status_code=303)
 
 
 @router.post("/review/matches/{match_id}/approve")
 def review_approve(request: Request, match_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
     require_login(request)
     ensure_csrf(request, csrf_token)
-    _set_review_status(match_id, "approved", session)
-    return RedirectResponse("/review", status_code=303)
+    match = _set_review_status(match_id, "approved", session)
+    return _review_response(request, match)
 
 
 @router.post("/review/matches/{match_id}/reject")
 def review_reject(request: Request, match_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
     require_login(request)
     ensure_csrf(request, csrf_token)
-    _set_review_status(match_id, "rejected", session)
-    return RedirectResponse("/review", status_code=303)
+    match = _set_review_status(match_id, "rejected", session)
+    return _review_response(request, match)
 
 
 @router.post("/review/matches/{match_id}/pending")
 def review_pending(request: Request, match_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
     require_login(request)
     ensure_csrf(request, csrf_token)
-    _set_review_status(match_id, "pending", session)
-    return RedirectResponse("/review", status_code=303)
+    match = _set_review_status(match_id, "pending", session)
+    return _review_response(request, match)
 
 
 @router.get("/cases")

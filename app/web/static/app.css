@@ -13,4 +13,21 @@ button,.button{background:#175cd3;color:white;border:0;border-radius:6px;padding
 input[type=text],input[type=password],input[type=file]{padding:8px;border:1px solid #b8c1cc;border-radius:6px;width:100%;max-width:480px}
 .error{background:#fee2e2;border:1px solid #fca5a5;padding:10px;border-radius:6px}
 .muted{color:#64748b}
-
+.review-top{position:sticky;top:0;z-index:5;background:#f5f7fa;border-bottom:1px solid #d6dde6;padding:10px 0 12px}
+.review-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.tab{background:white;border:1px solid #cbd5e1;border-radius:6px;padding:7px 10px}
+.tab.active{background:#172033;color:white;text-decoration:none}
+.review-filter{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.review-filter input,.review-filter select{padding:7px;border:1px solid #b8c1cc;border-radius:6px;max-width:180px}
+.review-group{margin:20px 0}
+.group-head{display:flex;justify-content:space-between;gap:12px;align-items:center;border-bottom:2px solid #d6dde6;margin-bottom:10px}
+.review-card{background:white;border:1px solid #d6dde6;border-radius:8px;margin:12px 0;padding:14px}
+.card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:700;margin-right:6px;background:#e2e8f0}
+.priority-A{background:#bbf7d0;color:#14532d}.priority-B{background:#fef08a;color:#713f12}.priority-C{background:#e2e8f0;color:#334155}
+.status-approved,.status-auto_approved{border-left:5px solid #16a34a}.status-rejected{border-left:5px solid #94a3b8;opacity:.78}.status-pending{border-left:5px solid #2563eb}
+.score{color:#475569;margin-right:10px}.meta{color:#475569;font-size:14px;margin:8px 0}.message-text{white-space:pre-wrap;margin:10px 0;line-height:1.45}
+.card-actions{position:sticky;top:92px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+button.reject{background:#b91c1c}.secondary{background:#64748b}.hidden{display:none}
+details pre{white-space:pre-wrap;background:#f8fafc;border:1px solid #e2e8f0;padding:10px;border-radius:6px}
+.compact-review .review-card{padding:8px;margin:7px 0}.compact-review .message-text{max-height:90px;overflow:hidden}.compact-review details{display:none}

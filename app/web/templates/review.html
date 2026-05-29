@@ -1,24 +1,145 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Review matches</h1>
-<table>
-  <tr><th>Case</th><th>Place</th><th>Priority</th><th>Status</th><th>Score</th><th>Channel</th><th>Posted</th><th>Text</th><th>Actions</th></tr>
-  {% for match, case, message, channel in rows %}
-  <tr>
-    <td>{{ case.id }}<br>{{ case.time_window_start or '' }} - {{ case.time_window_end or '' }}</td>
-    <td>{{ case.place_name or case.reference_text or '' }}</td>
-    <td>{{ match.priority }}</td>
-    <td>{{ match.review_status }}</td>
-    <td>{{ match.total_score }}<br><small>{{ match.score_details_json or match.reject_reason or '' }}</small></td>
-    <td>{{ channel.title or '' }}<br>@{{ channel.username or '' }}</td>
-    <td>{{ message.posted_at }}<br>{% if message.url %}<a href="{{ message.url }}">link</a>{% endif %}</td>
-    <td>{{ message.text[:1000] }}</td>
-    <td>
-      <form method="post" action="/review/matches/{{ match.id }}/approve"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Approve</button></form>
-      <form method="post" action="/review/matches/{{ match.id }}/reject"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Reject</button></form>
-      <form method="post" action="/review/matches/{{ match.id }}/pending"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Pending</button></form>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
+<div class="review-top">
+  <h1>Review matches</h1>
+  <nav class="review-tabs">
+    {% for s,label in [('pending','Pending'),('approved','Approved'),('auto_approved','Auto-approved'),('rejected','Rejected'),('all','All')] %}
+    <a class="tab {% if filters.status == s %}active{% endif %}" data-status="{{ s }}" href="/review?status={{ s }}">{{ label }} (<span data-count="{{ s }}">{{ counts[s] }}</span>)</a>
+    {% endfor %}
+  </nav>
+  <form class="review-filter" method="get" action="/review">
+    <select name="status">
+      {% for s in ['pending','approved','auto_approved','rejected','all'] %}<option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="priority">
+      <option value="">Any priority</option>
+      {% for p in ['A','B','C'] %}<option value="{{ p }}" {% if filters.priority == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+    </select>
+    <input type="number" name="case_id" placeholder="Case ID" value="{{ filters.case_id }}">
+    <input type="text" name="place" placeholder="Place" value="{{ filters.place }}">
+    <input type="text" name="channel" placeholder="Channel" value="{{ filters.channel }}">
+    <input type="hidden" name="limit" value="{{ filters.limit }}">
+    <button>Apply</button>
+    <label class="compact-toggle"><input type="checkbox" id="compactToggle"> compact</label>
+    <a class="button" href="#next-pending">Next pending case</a>
+  </form>
+</div>
+
+<p class="muted">Showing {{ total_filtered }} filtered matches, max {{ filters.limit }} on this page.</p>
+
+<div id="reviewList">
+{% for group in groups %}
+  <section class="review-group" data-case-id="{{ group.case_id }}">
+    <div class="group-head" id="{% if loop.first %}next-pending{% endif %}">
+      <h2>{{ group.label }} — Case #{{ group.case_id }} — {{ filters.status }} {{ group.count }}</h2>
+      <div>
+        <button class="bulk-action" data-status="approved">Approve all visible for this case</button>
+        <button class="bulk-action reject" data-status="rejected">Reject all visible for this case</button>
+      </div>
+    </div>
+    {% for match, case, message, channel, posted_local in group.rows %}
+    <article class="review-card status-{{ match.review_status }}" data-match-card data-match-id="{{ match.id }}" data-case-id="{{ case.id }}" data-status="{{ match.review_status }}">
+      <div class="card-head">
+        <div>
+          <span class="badge priority-{{ match.priority }}">{{ match.priority }}</span>
+          <span class="badge status">{{ match.review_status }}</span>
+          <span class="score">score {{ "%.3f"|format(match.total_score or 0) }}</span>
+          <strong>Case #{{ case.id }} — {{ case.place_name or case.reference_text or '' }}</strong>
+        </div>
+        <div class="card-actions">
+          <button data-review-action="approved">Approve</button>
+          <button data-review-action="rejected" class="reject">Reject</button>
+          <button data-review-action="pending" class="secondary">Pending</button>
+        </div>
+      </div>
+      <div class="meta">
+        окно: {{ case.time_window_start or '' }} — {{ case.time_window_end or '' }}<br>
+        источник: {{ channel.title or '' }} / @{{ channel.username or '' }}<br>
+        posted local: {{ posted_local }} | posted UTC: {{ message.posted_at }}{% if message.url %} | <a href="{{ message.url }}" target="_blank">open Telegram</a>{% endif %}
+      </div>
+      <div class="message-text">
+        {% if message.text|length > 1200 %}
+          <span class="short-text">{{ message.text[:1200] }}...</span>
+          <span class="full-text hidden">{{ message.text }}</span>
+          <button class="show-full" type="button">показать полностью</button>
+        {% else %}
+          {{ message.text }}
+        {% endif %}
+      </div>
+      <details>
+        <summary>Score details</summary>
+        <pre>{{ match.score_details_json or match.reject_reason or '' }}</pre>
+      </details>
+    </article>
+    {% endfor %}
+  </section>
+{% endfor %}
+</div>
+
+{% if next_offset is not none %}
+<p><a class="button" href="/review?status={{ filters.status }}&priority={{ filters.priority }}&case_id={{ filters.case_id }}&place={{ filters.place }}&channel={{ filters.channel }}&limit={{ filters.limit }}&offset={{ next_offset }}">Load more</a></p>
+{% endif %}
+
+<script>
+const csrfToken = "{{ csrf_token }}";
+const currentStatus = "{{ filters.status }}";
+
+function bumpCount(status, delta) {
+  const el = document.querySelector(`[data-count="${status}"]`);
+  if (!el) return;
+  el.textContent = Math.max(0, parseInt(el.textContent || "0", 10) + delta);
+}
+
+async function setStatus(card, status) {
+  const matchId = card.dataset.matchId;
+  const form = new FormData();
+  form.append("csrf_token", csrfToken);
+  const response = await fetch(`/review/matches/${matchId}/${status === "approved" ? "approve" : status === "rejected" ? "reject" : "pending"}`, {
+    method: "POST",
+    headers: {"X-Requested-With": "fetch", "Accept": "application/json"},
+    body: form
+  });
+  if (!response.ok) return;
+  const data = await response.json();
+  const oldStatus = card.dataset.status;
+  card.dataset.status = data.review_status;
+  card.className = card.className.replace(/status-\w+/g, "") + ` status-${data.review_status}`;
+  const statusBadge = card.querySelector(".badge.status");
+  if (statusBadge) statusBadge.textContent = data.review_status;
+  bumpCount(oldStatus, -1);
+  bumpCount(data.review_status, 1);
+  if (currentStatus !== "all" && currentStatus !== data.review_status) {
+    const group = card.closest(".review-group");
+    card.remove();
+    if (group && !group.querySelector("[data-match-card]")) group.remove();
+  }
+}
+
+document.querySelectorAll("[data-review-action]").forEach(button => {
+  button.addEventListener("click", () => setStatus(button.closest("[data-match-card]"), button.dataset.reviewAction));
+});
+
+document.querySelectorAll(".bulk-action").forEach(button => {
+  button.addEventListener("click", async () => {
+    const group = button.closest(".review-group");
+    const status = button.dataset.status;
+    if (!confirm(`${status} all visible cards for this case?`)) return;
+    for (const card of Array.from(group.querySelectorAll("[data-match-card]"))) {
+      await setStatus(card, status);
+    }
+  });
+});
+
+document.querySelectorAll(".show-full").forEach(button => {
+  button.addEventListener("click", () => {
+    const box = button.closest(".message-text");
+    box.querySelector(".short-text").classList.toggle("hidden");
+    box.querySelector(".full-text").classList.toggle("hidden");
+  });
+});
+
+document.getElementById("compactToggle")?.addEventListener("change", (event) => {
+  document.body.classList.toggle("compact-review", event.target.checked);
+});
+</script>
 {% endblock %}
