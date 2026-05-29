@@ -206,7 +206,10 @@ sudo systemctl start striker-worker striker-collector
 /opt/striker/.venv/bin/python -m app.cli search-archive Прилуки --date 2026-05-29
 /opt/striker/.venv/bin/python -m app.cli search-archive взрыв --date 2026-05-29
 /opt/striker/.venv/bin/python -m app.cli debug-match-case 1 --limit 50
+/opt/striker/.venv/bin/python -m app.cli search-by-case 1 --limit 50
 ```
+
+`match-cases` использует быстрый candidate-first алгоритм: сначала ограничивает сообщения SQL-окном по времени и городским alias, затем считает scoring только по кандидатам. Это должно завершаться за секунды или минуты на нескольких тысячах сообщений.
 
 ## FIRMS Caveat
 

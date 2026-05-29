@@ -20,7 +20,7 @@ from app.firms.client import fetch_firms_for_all_cases
 from app.geo.places_loader import load_places_csv
 from app.jobs import create_job, worker_loop
 from app.logging_setup import setup_logging
-from app.matching.case_matcher import localize_message_time, match_cases, score_message_for_case
+from app.matching.case_matcher import candidates_for_case, evidence_window, legacy_match_cases, localize_message_time, match_cases, score_message_for_case
 from app.matching.evidence import render_evidence
 from app.models import Case, Channel, ChannelCandidate, Export, Job, Message
 from app.security import hash_password
@@ -141,8 +141,7 @@ def cmd_fetch_firms(_args) -> None:
 def cmd_match_cases(_args) -> None:
     init_db()
     with session_scope() as session:
-        count = match_cases(session)
-    print(f"Created {count} matches.")
+        legacy_match_cases(session) if getattr(_args, "legacy", False) else match_cases(session)
 
 
 def cmd_archive_stats(_args) -> None:
@@ -200,8 +199,10 @@ def cmd_debug_match_case(args) -> None:
         case = session.get(Case, args.case_id)
         if not case:
             raise ConfigError(f"Case not found: {args.case_id}")
-        print(f"case id={case.id} place={case.place_name} date={case.event_date} window={case.time_window_start}..{case.time_window_end}")
-        messages = session.query(Message).order_by(Message.posted_at.desc()).limit(args.limit).all()
+        start_utc, end_utc = evidence_window(case)
+        print(f"case id={case.id} place={case.place_name} date={case.event_date} window_local={case.time_window_start}..{case.time_window_end}")
+        print(f"evidence_window_utc={start_utc}..{end_utc}")
+        messages, _, _ = candidates_for_case(session, case, limit=args.limit)
         for message in messages:
             channel = session.get(Channel, message.channel_id)
             scored = score_message_for_case(session, case, message)
@@ -214,6 +215,20 @@ def cmd_debug_match_case(args) -> None:
                 f"source={scored['source_score']} total={scored['total']} would_priority={scored['priority']} "
                 f"reasons={reasons} text={snippet}"
             )
+
+
+def cmd_search_by_case(args) -> None:
+    init_db()
+    with session_scope() as session:
+        case = session.get(Case, args.case_id)
+        if not case:
+            raise ConfigError(f"Case not found: {args.case_id}")
+        messages, start_utc, end_utc = candidates_for_case(session, case, limit=args.limit)
+        print(f"case id={case.id} place={case.place_name} evidence_window_utc={start_utc}..{end_utc}")
+        for message in messages:
+            channel = session.get(Channel, message.channel_id)
+            snippet = (message.text or "").replace("\n", " ")[:220]
+            print(f"{message.posted_at} | {localize_message_time(message.posted_at)} | {channel.username if channel else ''} | {message.url or ''} | {snippet}")
 
 
 def cmd_search_archive(args) -> None:
@@ -347,7 +362,6 @@ def build_parser() -> argparse.ArgumentParser:
         "collect-loop": (cmd_collect_loop, []),
         "worker-loop": (cmd_worker_loop, []),
         "fetch-firms": (cmd_fetch_firms, []),
-        "match-cases": (cmd_match_cases, []),
         "archive-stats": (cmd_archive_stats, []),
         "reindex-message-places": (cmd_reindex_message_places, []),
         "render-evidence": (cmd_render_evidence, []),
@@ -357,6 +371,9 @@ def build_parser() -> argparse.ArgumentParser:
     for name, (func, _opts) in commands.items():
         p = sub.add_parser(name)
         p.set_defaults(func=func)
+    p = sub.add_parser("match-cases")
+    p.add_argument("--legacy", action="store_true", help="Compatibility flag; fast matcher is used by default")
+    p.set_defaults(func=cmd_match_cases)
     p = sub.add_parser("export-report")
     p.add_argument("--style", choices=["osint", "technical"], default="osint")
     p.add_argument("--include-technical-appendix", action="store_true")
@@ -370,6 +387,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("case_id", type=int)
     p.add_argument("--limit", type=int, default=50)
     p.set_defaults(func=cmd_debug_match_case)
+    p = sub.add_parser("search-by-case")
+    p.add_argument("case_id", type=int)
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_search_by_case)
     p = sub.add_parser("search-archive")
     p.add_argument("query", nargs="+")
     p.add_argument("--date")

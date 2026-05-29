@@ -45,6 +45,13 @@ def init_db() -> None:
         connection.execute(text("PRAGMA journal_mode=WAL"))
         connection.execute(text("PRAGMA synchronous=NORMAL"))
         connection.execute(text("PRAGMA busy_timeout=30000"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_posted_at ON messages(posted_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_channel_posted_at ON messages(channel_id, posted_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_relevance_posted_at ON messages(relevance_score, posted_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_message_keywords_message_id ON message_keywords(message_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_message_places_message_id ON message_places(message_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_case_matches_case_id ON case_matches(case_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_case_matches_message_id ON case_matches(message_id)"))
     _ensure_runtime_columns()
 
 

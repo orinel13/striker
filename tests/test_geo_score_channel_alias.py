@@ -33,9 +33,8 @@ def test_channel_city_alias_gives_indirect_geo_score_and_caps_priority(session):
     )
     session.add_all([case, message])
     session.commit()
-    assert geo_score(session, case, message) == 0.45
+    assert geo_score(session, case, message) == 0.65
     match_cases(session)
     matches = session.execute(select(CaseMatch).where(CaseMatch.match_type == "telegram")).scalars().all()
     assert len(matches) == 1
     assert matches[0].priority == "B"
-
