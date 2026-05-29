@@ -49,6 +49,8 @@ cd /opt/striker
 bash scripts/deploy/bootstrap_vps.sh
 ```
 
+The bootstrap script uses the server default `python3` and checks that it is Python 3.11 or newer. Ubuntu 24.04/Noble usually provides Python 3.12 as `python3`, which is supported.
+
 Configure environment:
 
 ```bash
@@ -143,4 +145,3 @@ FIRMS shows thermal anomaly / active fire detection. FIRMS does not prove the ca
 sudo bash /opt/striker/scripts/deploy/backup_data.sh
 sudo bash /opt/striker/scripts/deploy/restore_data.sh /opt/striker-backups/striker-backup-YYYY-MM-DD_HH-MM-SS.tar.gz
 ```
-

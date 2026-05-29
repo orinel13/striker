@@ -2,7 +2,7 @@
 set -euo pipefail
 
 apt update
-apt install -y python3.11 python3.11-venv python3-pip git nginx unzip curl build-essential
+apt install -y python3 python3-venv python3-pip git nginx unzip curl build-essential
 
 if [ ! -d /opt/striker/.git ]; then
   rm -rf /opt/striker
@@ -10,10 +10,16 @@ if [ ! -d /opt/striker/.git ]; then
 fi
 
 cd /opt/striker
-python3.11 -m venv /opt/striker/.venv
+python3 - <<'PY'
+import sys
+if sys.version_info < (3, 11):
+    raise SystemExit("Python 3.11+ is required. Install a newer python3 package before continuing.")
+print(f"Using Python {sys.version.split()[0]}")
+PY
+python3 -m venv /opt/striker/.venv
 /opt/striker/.venv/bin/python -m pip install --upgrade pip
 /opt/striker/.venv/bin/pip install -e .
-/opt/striker/.venv/bin/playwright install chromium
+/opt/striker/.venv/bin/playwright install --with-deps chromium
 
 mkdir -p data/inbox data/exports data/media data/screenshots data/maps data/tmp /opt/striker-backups
 if [ ! -f .env ]; then
@@ -29,4 +35,3 @@ Next commands:
   sudo systemctl daemon-reload
   sudo systemctl enable --now striker-web striker-collector striker-worker
 EOF
-
