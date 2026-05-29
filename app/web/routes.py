@@ -9,12 +9,22 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.batches import (
+    activate_batch,
+    approved_publications_count,
+    archive_batch,
+    create_batch,
+    current_batch_id,
+    delete_batch,
+    get_current_batch,
+    update_batch_counts,
+)
 from app.config import get_settings
 from app.db import SessionLocal
 from app.jobs import create_job
 from app.matching.case_matcher import localize_message_time
 
-from app.models import Case, CaseMatch, Channel, ChannelCandidate, Export, Job, Message
+from app.models import Case, CaseBatch, CaseMatch, Channel, ChannelCandidate, Export, Job, Message
 from app.security import (
     ensure_csrf,
     new_csrf_token,
@@ -76,23 +86,39 @@ def logout(request: Request, csrf_token: str = Form(...)):
 @router.get("/")
 def dashboard(request: Request, session: Session = Depends(db_session)):
     require_login(request)
-    cutoff = datetime.utcnow() - timedelta(days=get_settings().telegram_archive_days)
-    priority_rows = session.query(CaseMatch.priority, CaseMatch.review_status, func.count(CaseMatch.id)).group_by(CaseMatch.priority, CaseMatch.review_status).all()
-    latest_export = session.query(Export).order_by(Export.created_at.desc()).first()
+    settings = get_settings()
+    cutoff = datetime.utcnow() - timedelta(days=settings.telegram_archive_days)
+    batch = get_current_batch(session)
+    batch_id = batch.id if batch else None
+    if batch:
+        update_batch_counts(session, batch.id)
+    priority_rows_query = session.query(CaseMatch.priority, CaseMatch.review_status, func.count(CaseMatch.id)).join(Case, Case.id == CaseMatch.case_id)
+    if batch_id:
+        priority_rows_query = priority_rows_query.filter(Case.batch_id == batch_id)
+    priority_rows = priority_rows_query.group_by(CaseMatch.priority, CaseMatch.review_status).all()
+    latest_export_query = session.query(Export).order_by(Export.created_at.desc())
+    if batch_id:
+        latest_export_query = latest_export_query.filter(Export.batch_id == batch_id)
+    latest_export = latest_export_query.first()
+    pending_query = session.query(CaseMatch).join(Case, Case.id == CaseMatch.case_id).filter(CaseMatch.review_status == "pending", CaseMatch.message_id.isnot(None))
+    if batch_id:
+        pending_query = pending_query.filter(Case.batch_id == batch_id)
     return render(
         request,
         "dashboard.html",
         {
             "jobs": session.query(Job).count(),
-            "cases": session.query(Case).count(),
+            "cases": session.query(Case).filter(Case.batch_id == batch_id).count() if batch_id else session.query(Case).count(),
             "messages": session.query(Message).count(),
             "messages_recent": session.query(Message).filter(Message.posted_at >= cutoff).count(),
             "oldest_message": session.query(func.min(Message.posted_at)).scalar(),
             "newest_message": session.query(func.max(Message.posted_at)).scalar(),
-            "exports": session.query(Export).count(),
+            "channels_count": session.query(Channel).count(),
+            "exports": session.query(Export).filter(Export.batch_id == batch_id).count() if batch_id else session.query(Export).count(),
             "match_stats": priority_rows,
-            "pending_review": session.query(CaseMatch).filter(CaseMatch.review_status == "pending", CaseMatch.message_id.isnot(None)).count(),
+            "pending_review": pending_query.count(),
             "latest_export": latest_export,
+            "current_batch": batch,
         },
     )
 
@@ -113,6 +139,8 @@ async def upload_docx(
     period_end: str = Form(default=""),
     night_mode: str | None = Form(default=None),
     rollover_hour: int = Form(default=12),
+    activate_batch_flag: str | None = Form(default="on"),
+    archive_previous: str | None = Form(default=None),
     session: Session = Depends(db_session),
 ):
     require_login(request)
@@ -124,7 +152,22 @@ async def upload_docx(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     params = _upload_params(document_date, period_start, period_end, night_mode, rollover_hour)
-    job = create_job(session, "process-docx", str(path), params=params)
+    parsed_document_date = datetime.fromisoformat(document_date).date() if document_date else None
+    parsed_period_start = datetime.fromisoformat(period_start).date() if period_start else None
+    parsed_period_end = datetime.fromisoformat(period_end).date() if period_end else None
+    batch = create_batch(
+        session,
+        source_filename=filename,
+        original_path=str(path),
+        document_date=parsed_document_date if not parsed_period_start else None,
+        period_start=parsed_period_start,
+        period_end=parsed_period_end,
+        night_mode=bool(night_mode),
+        rollover_hour=rollover_hour,
+        activate=bool(activate_batch_flag),
+        archive_previous=bool(archive_previous),
+    )
+    job = create_job(session, "process-docx", str(path), params=params, batch_id=batch.id)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
 
@@ -191,6 +234,7 @@ def messages(request: Request, session: Session = Depends(db_session)):
 def review(
     request: Request,
     status: str = "pending",
+    batch_id: int | None = None,
     priority: str | None = None,
     case_id: int | None = None,
     place: str | None = None,
@@ -200,14 +244,17 @@ def review(
     session: Session = Depends(db_session),
 ):
     require_login(request)
+    selected_batch_id = current_batch_id(session, batch_id)
     allowed_statuses = {"pending", "approved", "auto_approved", "rejected", "all"}
     status = status if status in allowed_statuses else "pending"
-    counts = dict(
+    counts_query = (
         session.query(CaseMatch.review_status, func.count(CaseMatch.id))
+        .join(Case, Case.id == CaseMatch.case_id)
         .filter(CaseMatch.match_type == "telegram", CaseMatch.message_id.isnot(None))
-        .group_by(CaseMatch.review_status)
-        .all()
     )
+    if selected_batch_id:
+        counts_query = counts_query.filter(Case.batch_id == selected_batch_id)
+    counts = dict(counts_query.group_by(CaseMatch.review_status).all())
     base = (
         session.query(CaseMatch, Case, Message, Channel)
         .join(Case, Case.id == CaseMatch.case_id)
@@ -215,6 +262,8 @@ def review(
         .join(Channel, Channel.id == Message.channel_id)
         .filter(CaseMatch.match_type == "telegram")
     )
+    if selected_batch_id:
+        base = base.filter(Case.batch_id == selected_batch_id)
     if status != "all":
         base = base.filter(CaseMatch.review_status == status)
     if priority:
@@ -263,10 +312,12 @@ def review(
                 "rejected": counts.get("rejected", 0),
                 "all": sum(counts.values()),
             },
-            "filters": {"status": status, "priority": priority or "", "case_id": case_id or "", "place": place or "", "channel": channel or "", "limit": limit, "offset": offset},
+            "filters": {"status": status, "priority": priority or "", "case_id": case_id or "", "place": place or "", "channel": channel or "", "limit": limit, "offset": offset, "batch_id": selected_batch_id or ""},
             "total_filtered": total_filtered,
             "next_offset": offset + limit if offset + limit < total_filtered else None,
             "pending_review": counts.get("pending", 0),
+            "batches": session.query(CaseBatch).order_by(CaseBatch.created_at.desc(), CaseBatch.id.desc()).all(),
+            "selected_batch_id": selected_batch_id,
         },
     )
 
@@ -314,7 +365,11 @@ def review_pending(request: Request, match_id: int, csrf_token: str = Form(...),
 @router.get("/cases")
 def cases(request: Request, session: Session = Depends(db_session)):
     require_login(request)
-    return render(request, "cases.html", {"cases": session.query(Case).order_by(Case.id.desc()).all()})
+    batch_id = current_batch_id(session)
+    query = session.query(Case)
+    if batch_id:
+        query = query.filter(Case.batch_id == batch_id)
+    return render(request, "cases.html", {"cases": query.order_by(Case.id.desc()).all()})
 
 
 @router.get("/cases/{case_id}")
@@ -329,7 +384,11 @@ def case_detail(request: Request, case_id: int, session: Session = Depends(db_se
 @router.get("/exports")
 def exports(request: Request, session: Session = Depends(db_session)):
     require_login(request)
-    return render(request, "exports.html", {"exports": session.query(Export).order_by(Export.created_at.desc()).all()})
+    batch_id = current_batch_id(session)
+    query = session.query(Export)
+    if batch_id:
+        query = query.filter(Export.batch_id == batch_id)
+    return render(request, "exports.html", {"exports": query.order_by(Export.created_at.desc()).all(), "batch_id": batch_id, "approved_count": approved_publications_count(session, batch_id)})
 
 
 def _export_path(export: Export, file: str) -> tuple[str | None, str]:
@@ -376,16 +435,64 @@ def import_latest(request: Request, csrf_token: str = Form(...), session: Sessio
 def queue_match(request: Request, csrf_token: str = Form(...), session: Session = Depends(db_session)):
     require_login(request)
     ensure_csrf(request, csrf_token)
-    create_job(session, "match-cases")
+    create_job(session, "match-cases", batch_id=current_batch_id(session))
     return RedirectResponse("/jobs", status_code=303)
 
 
 @router.post("/exports/build-latest")
-def queue_export(request: Request, csrf_token: str = Form(...), session: Session = Depends(db_session)):
+def queue_export(request: Request, csrf_token: str = Form(...), batch_id: int | None = Form(default=None), session: Session = Depends(db_session)):
     require_login(request)
     ensure_csrf(request, csrf_token)
-    create_job(session, "export-report")
+    batch_id = current_batch_id(session, batch_id)
+    if approved_publications_count(session, batch_id) <= 0:
+        return render(request, "exports.html", {"exports": session.query(Export).order_by(Export.created_at.desc()).all(), "error": "No approved publications for report", "batch_id": batch_id, "approved_count": 0})
+    create_job(session, "export-report", params={"text_only": True}, batch_id=batch_id)
     return RedirectResponse("/jobs", status_code=303)
+
+
+@router.get("/batches")
+def batches(request: Request, session: Session = Depends(db_session)):
+    require_login(request)
+    current = get_current_batch(session)
+    rows = session.query(CaseBatch).order_by(CaseBatch.created_at.desc(), CaseBatch.id.desc()).all()
+    for batch in rows:
+        update_batch_counts(session, batch.id)
+    return render(request, "batches.html", {"batches": rows, "current_batch": current})
+
+
+@router.post("/batches/{batch_id}/activate")
+def web_activate_batch(request: Request, batch_id: int, csrf_token: str = Form(...), archive_previous: str | None = Form(default=None), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    activate_batch(session, batch_id, archive_previous=bool(archive_previous))
+    return RedirectResponse("/batches", status_code=303)
+
+
+@router.post("/batches/{batch_id}/archive")
+def web_archive_batch(request: Request, batch_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    archive_batch(session, batch_id)
+    return RedirectResponse("/batches", status_code=303)
+
+
+@router.post("/batches/{batch_id}/delete")
+def web_delete_batch(request: Request, batch_id: int, csrf_token: str = Form(...), confirm: str = Form(default=""), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    if confirm == "yes":
+        delete_batch(session, batch_id)
+    return RedirectResponse("/batches", status_code=303)
+
+
+@router.post("/batches/current/clear")
+def web_clear_current_batch(request: Request, csrf_token: str = Form(...), confirm: str = Form(default=""), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    batch = get_current_batch(session)
+    if batch and confirm == "yes":
+        delete_batch(session, batch.id)
+    return RedirectResponse("/batches", status_code=303)
 
 
 @router.post("/api/documents/upload", dependencies=[Depends(require_api_auth)])
@@ -405,8 +512,20 @@ async def api_upload(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     params = _upload_params(document_date, period_start, period_end, night_mode, rollover_hour)
-    job = create_job(session, "process-docx", str(path), params=params)
-    return {"ok": True, "job_id": job.id, "filename": filename}
+    batch = create_batch(
+        session,
+        source_filename=filename,
+        original_path=str(path),
+        document_date=datetime.fromisoformat(document_date).date() if document_date else None,
+        period_start=datetime.fromisoformat(period_start).date() if period_start else None,
+        period_end=datetime.fromisoformat(period_end).date() if period_end else None,
+        night_mode=bool(night_mode),
+        rollover_hour=rollover_hour,
+        activate=True,
+        archive_previous=get_settings().archive_previous_batches_on_upload,
+    )
+    job = create_job(session, "process-docx", str(path), params=params, batch_id=batch.id)
+    return {"ok": True, "job_id": job.id, "batch_id": batch.id, "filename": filename}
 
 
 def _upload_params(

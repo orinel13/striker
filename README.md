@@ -111,14 +111,47 @@ PowerShell workflow:
 
 ## Типы отчётов
 
-- `report.docx` — основной OSINT-отчёт по Telegram-публикациям, сгруппированный по населённым пунктам.
+- `report.docx` — основной text-only OSINT-отчёт по Telegram-публикациям, сгруппированный по населённым пунктам. По умолчанию он не открывает Telegram через Playwright, не создаёт PNG/cards и не вставляет изображения.
 - `technical_report.docx` — техническая диагностика кейсов, координат, FIRMS и scoring; используется для проверки парсинга и сопоставления.
-- `evidence.zip` — пакет с отчётами, скриншотами, картами, исходным `.docx` и metadata.
+- `evidence.zip` — пакет с `report.docx`, `report.html`, metadata и копией исходного `.docx`, если она передана в export.
 
-По умолчанию `python -m app.cli export-report` создаёт OSINT-отчёт. Технический режим:
+По умолчанию `python -m app.cli export-report` создаёт быстрый text-only OSINT-отчёт только по `approved` и `auto_approved` публикациям текущего batch. Технический режим:
 
 ```bash
 python -m app.cli export-report --style technical
+```
+
+Опциональные slow/debug режимы:
+
+```bash
+python -m app.cli export-report --with-local-cards
+python -m app.cli export-report --external-screenshots
+python -m app.cli export-report --include-pending
+```
+
+## Ежедневные задания / batches
+
+Telegram archive живёт отдельно и постоянно пополняется. Каждый Word-документ создаёт отдельный batch с кейсами, матчами, review и export. Очистка batch не удаляет `channels`, `messages`, `message_keywords`, `message_places` и Telegram session.
+
+Основные команды:
+
+```bash
+python -m app.cli list-batches
+python -m app.cli show-batch 1
+python -m app.cli activate-batch 1
+python -m app.cli archive-batch 1
+python -m app.cli delete-batch 1 --yes
+python -m app.cli clear-current-batch --yes
+python -m app.cli clear-all-batches --yes --keep-telegram
+```
+
+Обычный ежедневный CLI-flow:
+
+```bash
+python -m app.cli import-docx data/inbox/strikes.docx --document-date 2026-05-29
+python -m app.cli match-cases
+# review approved/auto_approved через /review
+python -m app.cli export-report
 ```
 
 ## Импорт табличных актов ударов

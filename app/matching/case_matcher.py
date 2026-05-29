@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from app.batches import current_batch_id, update_batch_counts
 from app.config import get_settings
 from app.firms.matcher import FIRMS_CAVEAT, nearby_firms_points
 from app.geo.distance import haversine_km
@@ -385,11 +386,23 @@ def _accepted_sort_key(item: tuple[Message, ScoreResult]) -> tuple[int, float, d
     return order.get(item[1].priority, 99), -item[1].total, item[0].posted_at
 
 
-def match_cases(session: Session, progress: bool = True) -> dict:
-    session.query(CaseMatch).delete()
-    cases = session.query(Case).order_by(Case.id).all()
+def _case_query_for_batch(session: Session, batch_id: int | None, all_batches: bool = False):
+    query = session.query(Case)
+    if not all_batches:
+        selected_batch_id = current_batch_id(session, batch_id)
+        if selected_batch_id is not None:
+            query = query.filter(Case.batch_id == selected_batch_id)
+    return query.order_by(Case.id)
+
+
+def match_cases(session: Session, progress: bool = True, batch_id: int | None = None, all_batches: bool = False) -> dict:
+    selected_batch_id = None if all_batches else current_batch_id(session, batch_id)
+    cases = _case_query_for_batch(session, selected_batch_id, all_batches=all_batches).all()
+    case_ids = [case.id for case in cases]
+    if case_ids:
+        session.query(CaseMatch).filter(CaseMatch.case_id.in_(case_ids)).delete(synchronize_session=False)
     created = 0
-    stats = {"cases": len(cases), "matches": 0, "A": 0, "B": 0, "C": 0, "pending": 0}
+    stats = {"cases": len(cases), "matches": 0, "A": 0, "B": 0, "C": 0, "pending": 0, "auto_approved": 0, "batch_id": selected_batch_id}
     for index, case in enumerate(cases, start=1):
         aliases = _case_aliases(case)
         messages, _start_utc, _end_utc = candidates_for_case(session, case)
@@ -450,6 +463,8 @@ def match_cases(session: Session, progress: bool = True) -> dict:
             stats[score.priority] = stats.get(score.priority, 0) + 1
             if review_status == "pending":
                 stats["pending"] += 1
+            elif review_status == "auto_approved":
+                stats["auto_approved"] += 1
         firms_added = 0
         for point in nearby_firms_points(session, case):
             session.add(
@@ -479,9 +494,11 @@ def match_cases(session: Session, progress: bool = True) -> dict:
                 + " ".join(f"{key}={value}" for key, value in rejected.items())
             )
     print(f"Created {created} matches.")
+    if selected_batch_id is not None:
+        update_batch_counts(session, selected_batch_id)
     return stats
 
 
-def legacy_match_cases(session: Session) -> int:
+def legacy_match_cases(session: Session, batch_id: int | None = None, all_batches: bool = False) -> int:
     # Kept as a compatibility alias; the old O(cases * messages) implementation was intentionally removed.
-    return match_cases(session, progress=True)
+    return match_cases(session, progress=True, batch_id=batch_id, all_batches=all_batches)

@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401
 from app.db import Base
+from app.batches import create_batch
 from app.models import Case, CaseMatch, Channel, Message
 from app.telegram.normalizer import normalize_text, text_sha256
 from app.web.main import app
@@ -31,17 +32,18 @@ def review_session():
     app.dependency_overrides.clear()
 
 
-def _add_match(session, status: str, text: str = "text") -> CaseMatch:
-    channel = Channel(username=f"chan_{status}", title=f"Channel {status}")
+def _add_match(session, status: str, text: str = "text", batch_id: int | None = None) -> CaseMatch:
+    suffix = abs(hash((status, text, batch_id))) % 100000
+    channel = Channel(username=f"chan_{status}_{suffix}", title=f"Channel {status}")
     session.add(channel)
     session.flush()
-    case = Case(raw_text=f"case {status}", place_name="Краматорск")
+    case = Case(batch_id=batch_id, raw_text=f"case {status}", place_name="Краматорск")
     session.add(case)
     session.flush()
     norm = normalize_text(text)
     message = Message(
         channel_id=channel.id,
-        tg_message_id=abs(hash(status)) % 100000,
+        tg_message_id=suffix,
         posted_at=datetime(2026, 5, 29, 7, 0),
         collected_at=datetime(2026, 5, 29, 7, 0),
         text=text,
@@ -132,3 +134,20 @@ def test_review_pending_count_decreases_after_approve(monkeypatch, review_sessio
     )
     after = client.get("/review").text
     assert "Pending (<span data-count=\"pending\">0</span>)" in after
+
+
+def test_review_default_current_batch_only_and_old_batch_query(monkeypatch, review_session):
+    from app.web import routes
+
+    monkeypatch.setattr(routes, "require_login", lambda request: None)
+    old = create_batch(review_session, source_filename="old.docx")
+    current = create_batch(review_session, source_filename="current.docx")
+    _add_match(review_session, "pending", "old batch pending", batch_id=old.id)
+    _add_match(review_session, "pending", "current batch pending", batch_id=current.id)
+    client = _client(review_session)
+    response = client.get("/review")
+    assert "current batch pending" in response.text
+    assert "old batch pending" not in response.text
+    response = client.get(f"/review?batch_id={old.id}")
+    assert "old batch pending" in response.text
+    assert "current batch pending" not in response.text

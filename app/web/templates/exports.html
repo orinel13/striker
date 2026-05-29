@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Exports</h1>
-<form method="post" action="/exports/build-latest"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Build latest</button></form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<p class="muted">Build report creates a fast text-only OSINT report for the current batch. Approved/auto-approved publications: {{ approved_count or 0 }}</p>
+<form method="post" action="/exports/build-latest"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="batch_id" value="{{ batch_id or '' }}"><button>Build report</button></form>
 <table><tr><th>ID</th><th>Created</th><th>Title</th><th>Download</th></tr>
 {% for e in exports %}<tr><td>{{ e.id }}</td><td>{{ e.created_at }}</td><td>{{ e.title or '' }}</td><td><a href="/exports/{{ e.id }}/download?file=docx">report.docx</a> | <a href="/exports/{{ e.id }}/download?file=html">report.html</a> | <a href="/exports/{{ e.id }}/download?file=technical">technical report</a> | <a href="/exports/{{ e.id }}/download?file=zip">evidence.zip</a></td></tr>{% endfor %}
 </table>

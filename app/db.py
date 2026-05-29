@@ -53,11 +53,17 @@ def init_db() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_case_matches_case_id ON case_matches(case_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_case_matches_message_id ON case_matches(message_id)"))
     _ensure_runtime_columns()
+    with engine.begin() as connection:
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cases_batch_id ON cases(batch_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_exports_batch_id ON exports(batch_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_batch_id ON jobs(batch_id)"))
+    _ensure_legacy_batch()
 
 
 def _ensure_runtime_columns() -> None:
     required = {
         "cases": {
+            "batch_id": "INTEGER REFERENCES case_batches(id)",
             "oblast": "VARCHAR",
             "reference_text": "TEXT",
             "raw_grid_northing": "VARCHAR",
@@ -66,7 +72,17 @@ def _ensure_runtime_columns() -> None:
             "parser_warnings": "TEXT",
         },
         "jobs": {
+            "batch_id": "INTEGER REFERENCES case_batches(id)",
             "params_json": "TEXT",
+        },
+        "exports": {
+            "batch_id": "INTEGER REFERENCES case_batches(id)",
+        },
+        "evidence_files": {
+            "batch_id": "INTEGER REFERENCES case_batches(id)",
+        },
+        "firms_points": {
+            "batch_id": "INTEGER REFERENCES case_batches(id)",
         },
         "case_matches": {
             "review_status": "VARCHAR DEFAULT 'pending'",
@@ -84,3 +100,25 @@ def _ensure_runtime_columns() -> None:
             for column_name, column_type in columns.items():
                 if column_name not in existing:
                     connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+
+
+def _ensure_legacy_batch() -> None:
+    inspector = inspect(engine)
+    if "case_batches" not in inspector.get_table_names() or "cases" not in inspector.get_table_names():
+        return
+    with engine.begin() as connection:
+        unassigned = connection.execute(text("SELECT COUNT(*) FROM cases WHERE batch_id IS NULL")).scalar() or 0
+        if not unassigned:
+            return
+        existing = connection.execute(text("SELECT id FROM case_batches WHERE source_filename = 'legacy' ORDER BY id LIMIT 1")).scalar()
+        if existing:
+            batch_id = existing
+        else:
+            result = connection.execute(
+                text(
+                    "INSERT INTO case_batches (created_at, updated_at, source_filename, title, status, night_mode, cases_count, matches_count, approved_count, pending_count) "
+                    "VALUES (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'legacy', 'Legacy imported cases', 'active', 0, 0, 0, 0, 0)"
+                )
+            )
+            batch_id = result.lastrowid
+        connection.execute(text("UPDATE cases SET batch_id = :batch_id WHERE batch_id IS NULL"), {"batch_id": batch_id})

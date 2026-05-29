@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Batches</h1>
+<p class="muted">Telegram archive хранится отдельно. Удаление batch удаляет только кейсы, review/matches/jobs/exports этого задания.</p>
+<table>
+  <tr><th>ID</th><th>Current</th><th>Source</th><th>Status</th><th>Created</th><th>Period</th><th>Cases</th><th>Matches</th><th>Pending</th><th>Approved</th><th>Actions</th></tr>
+  {% for b in batches %}
+  <tr>
+    <td>{{ b.id }}</td>
+    <td>{% if current_batch and current_batch.id == b.id %}current{% endif %}</td>
+    <td>{{ b.source_filename or b.title or '' }}</td>
+    <td>{{ b.status }}</td>
+    <td>{{ b.created_at }}</td>
+    <td>{{ b.document_date or b.period_start or '' }}{% if b.period_end %} - {{ b.period_end }}{% endif %}</td>
+    <td>{{ b.cases_count }}</td>
+    <td>{{ b.matches_count }}</td>
+    <td>{{ b.pending_count }}</td>
+    <td>{{ b.approved_count }}</td>
+    <td>
+      <a href="/review?batch_id={{ b.id }}">Review</a>
+      <form method="post" action="/exports/build-latest" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="batch_id" value="{{ b.id }}"><button>Build report</button></form>
+      <form method="post" action="/batches/{{ b.id }}/activate" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Activate</button></form>
+      <form method="post" action="/batches/{{ b.id }}/archive" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Archive</button></form>
+      <form method="post" action="/batches/{{ b.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this batch only? Telegram archive will be kept.')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="confirm" value="yes"><button class="reject">Delete</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+<form method="post" action="/batches/current/clear" onsubmit="return confirm('Clear current batch only? Telegram archive will be kept.')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="confirm" value="yes">
+  <button class="reject">Clear current batch</button>
+</form>
+{% endblock %}

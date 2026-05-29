@@ -4,12 +4,16 @@
   <h1>Review matches</h1>
   <nav class="review-tabs">
     {% for s,label in [('pending','Pending'),('approved','Approved'),('auto_approved','Auto-approved'),('rejected','Rejected'),('all','All')] %}
-    <a class="tab {% if filters.status == s %}active{% endif %}" data-status="{{ s }}" href="/review?status={{ s }}">{{ label }} (<span data-count="{{ s }}">{{ counts[s] }}</span>)</a>
+    <a class="tab {% if filters.status == s %}active{% endif %}" data-status="{{ s }}" href="/review?status={{ s }}&batch_id={{ filters.batch_id }}">{{ label }} (<span data-count="{{ s }}">{{ counts[s] }}</span>)</a>
     {% endfor %}
   </nav>
   <form class="review-filter" method="get" action="/review">
     <select name="status">
       {% for s in ['pending','approved','auto_approved','rejected','all'] %}<option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="batch_id">
+      <option value="">Current batch</option>
+      {% for b in batches %}<option value="{{ b.id }}" {% if filters.batch_id == b.id %}selected{% endif %}>#{{ b.id }} {{ b.source_filename or b.title or '' }}</option>{% endfor %}
     </select>
     <select name="priority">
       <option value="">Any priority</option>
@@ -77,7 +81,7 @@
 </div>
 
 {% if next_offset is not none %}
-<p><a class="button" href="/review?status={{ filters.status }}&priority={{ filters.priority }}&case_id={{ filters.case_id }}&place={{ filters.place }}&channel={{ filters.channel }}&limit={{ filters.limit }}&offset={{ next_offset }}">Load more</a></p>
+<p><a class="button" href="/review?status={{ filters.status }}&batch_id={{ filters.batch_id }}&priority={{ filters.priority }}&case_id={{ filters.case_id }}&place={{ filters.place }}&channel={{ filters.channel }}&limit={{ filters.limit }}&offset={{ next_offset }}">Load more</a></p>
 {% endif %}
 
 <script>

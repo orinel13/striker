@@ -10,6 +10,9 @@
     <p><label>Конец периода<br><input type="date" name="period_end"></label></p>
     <p><label><input type="checkbox" name="night_mode" value="1"> Ночной период / переход через полночь</label></p>
     <p><label>Граница ночных часов<br><input type="number" name="rollover_hour" value="12" min="0" max="23"></label></p>
+    <p><label><input type="checkbox" name="activate_batch_flag" value="on" checked> Сделать новым активным заданием</label></p>
+    <p><label><input type="checkbox" name="archive_previous" value="1"> Архивировать предыдущие задания</label></p>
+    <p class="muted">Telegram archive хранится отдельно и не будет удалён при очистке заданий.</p>
     <p><input type="file" name="file" accept=".docx" required></p>
     <button>Upload and process</button>
   </form>

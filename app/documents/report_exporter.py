@@ -14,6 +14,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.shared import Inches
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.firms.matcher import FIRMS_CAVEAT
 from app.matching.case_matcher import localize_message_time
 from app.models import Case, CaseMatch, Channel, EvidenceFile, Export, Message
@@ -81,14 +82,18 @@ def _case_place(case: Case) -> str:
     return case.place_name or case.reference_text or "Неустановленный населённый пункт"
 
 
-def build_publication_items(session: Session, include_pending: bool = False) -> list[PublicationItem]:
+def build_publication_items(session: Session, include_pending: bool = False, batch_id: int | None = None, dedup_global: bool | None = None) -> list[PublicationItem]:
     items_by_key: dict[tuple[str, int], PublicationItem] = {}
     order: list[tuple[str, int]] = []
-    for case in session.query(Case).order_by(Case.id).all():
+    dedup_global = get_settings().export_dedup_global if dedup_global is None else dedup_global
+    cases = session.query(Case)
+    if batch_id is not None:
+        cases = cases.filter(Case.batch_id == batch_id)
+    for case in cases.order_by(Case.id).all():
         place_name = _case_place(case)
         for match, message in telegram_matches_for_case(session, case.id, include_pending=include_pending):
             dedupe_id = message.canonical_message_id or message.id
-            key = (place_name, dedupe_id)
+            key = ("__global__", dedupe_id) if dedup_global else (place_name, dedupe_id)
             channel = session.get(Channel, message.channel_id)
             if key not in items_by_key:
                 items_by_key[key] = PublicationItem(
@@ -120,7 +125,12 @@ def build_publication_items(session: Session, include_pending: bool = False) -> 
     return items
 
 
-def ensure_publication_screenshot(session: Session, item: PublicationItem) -> str | None:
+def ensure_publication_screenshot(
+    session: Session,
+    item: PublicationItem,
+    with_local_cards: bool = True,
+    external_screenshots: bool = False,
+) -> str | None:
     message = session.get(Message, item.message_id)
     if not message:
         return None
@@ -137,25 +147,30 @@ def ensure_publication_screenshot(session: Session, item: PublicationItem) -> st
             else:
                 item.screenshot_path = evidence.path
             return evidence.path
-    try:
-        path = asyncio.run(screenshot_message(session, message))
-    except RuntimeError:
-        path = None
-    if path and path.lower().endswith(".png") and Path(path).exists():
-        item.screenshot_path = path
-        return path
-    try:
-        path = asyncio.run(render_evidence_card_png(session, message, case_id=item.case_ids[0] if item.case_ids else None))
-    except RuntimeError:
-        path = None
-    if path and Path(path).exists():
-        item.evidence_card_path = path
-        return path
+    if external_screenshots:
+        try:
+            path = asyncio.run(screenshot_message(session, message))
+        except RuntimeError:
+            path = None
+        if path and path.lower().endswith(".png") and Path(path).exists():
+            item.screenshot_path = path
+            return path
+    if with_local_cards:
+        try:
+            path = asyncio.run(render_evidence_card_png(session, message, case_id=item.case_ids[0] if item.case_ids else None))
+        except RuntimeError:
+            path = None
+        if path and Path(path).exists():
+            item.evidence_card_path = path
+            return path
     return None
 
 
-def _unmatched_cases(session: Session, include_pending: bool = False) -> list[Case]:
-    return [case for case in session.query(Case).order_by(Case.id).all() if not telegram_matches_for_case(session, case.id, include_pending=include_pending)]
+def _unmatched_cases(session: Session, include_pending: bool = False, batch_id: int | None = None) -> list[Case]:
+    query = session.query(Case)
+    if batch_id is not None:
+        query = query.filter(Case.batch_id == batch_id)
+    return [case for case in query.order_by(Case.id).all() if not telegram_matches_for_case(session, case.id, include_pending=include_pending)]
 
 
 def _add_no_publications_appendix(doc: Document, cases: list[Case]) -> None:
@@ -173,18 +188,31 @@ def _add_no_publications_appendix(doc: Document, cases: list[Case]) -> None:
         row[3].text = case.raw_text[:500]
 
 
-def build_osint_docx_report(session: Session, out_path: Path, include_pending: bool = False) -> None:
+def build_osint_docx_report(
+    session: Session,
+    out_path: Path,
+    include_pending: bool = False,
+    batch_id: int | None = None,
+    text_only: bool = True,
+    with_local_cards: bool = False,
+    external_screenshots: bool = False,
+    progress=None,
+) -> list[PublicationItem]:
     doc = Document()
     doc.add_heading("OSINT-подборка подтверждающих публикаций", 0)
     doc.add_paragraph("Автоматическая ретроспективная подборка из Telegram-архива. Не является live tracking.")
-    items = build_publication_items(session, include_pending=include_pending)
+    items = build_publication_items(session, include_pending=include_pending, batch_id=batch_id)
     if not items:
         doc.add_paragraph("По загруженным кейсам не найдено Telegram-публикаций, удовлетворяющих критериям сопоставления.")
-        _add_no_publications_appendix(doc, session.query(Case).order_by(Case.id).all())
+        _add_no_publications_appendix(doc, _unmatched_cases(session, include_pending=include_pending, batch_id=batch_id))
         doc.save(out_path)
-        return
+        return items
+    if progress:
+        progress(f"report items count: {len(items)}")
     current_place: str | None = None
     for item in items:
+        if progress:
+            progress(f"item {item.publication_number}/{len(items)} {item.place_name}")
         if item.place_name != current_place:
             current_place = item.place_name
             doc.add_heading(item.place_name, level=1)
@@ -206,11 +234,13 @@ def build_osint_docx_report(session: Session, out_path: Path, include_pending: b
         doc.add_paragraph(f"Время публикации: {item.posted_at_local:%H:%M}")
         if item.url:
             doc.add_paragraph(f"Ссылка: {item.url}")
-        screenshot_path = ensure_publication_screenshot(session, item)
-        material = "фотоматериал." if screenshot_path else "ссылка на публикацию."
+        screenshot_path = None
+        if not text_only:
+            screenshot_path = ensure_publication_screenshot(session, item, with_local_cards=with_local_cards, external_screenshots=external_screenshots)
+        material = "фотоматериал."
         material_paragraph = doc.add_paragraph()
         material_paragraph.add_run(f"Подтверждающий материал: {material}").italic = True
-        if screenshot_path and Path(screenshot_path).exists():
+        if not text_only and screenshot_path and Path(screenshot_path).exists():
             try:
                 doc.add_picture(screenshot_path, width=Inches(6.0))
             except Exception:
@@ -220,12 +250,22 @@ def build_osint_docx_report(session: Session, out_path: Path, include_pending: b
             doc.add_paragraph(item.text)
         doc.add_paragraph(f"Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}")
         doc.add_paragraph("")
-    _add_no_publications_appendix(doc, _unmatched_cases(session, include_pending=include_pending))
+    _add_no_publications_appendix(doc, _unmatched_cases(session, include_pending=include_pending, batch_id=batch_id))
     doc.save(out_path)
+    return items
 
 
-def build_osint_html_report(session: Session, out_path: Path, include_pending: bool = False) -> None:
-    items = build_publication_items(session, include_pending=include_pending)
+def build_osint_html_report(
+    session: Session,
+    out_path: Path,
+    include_pending: bool = False,
+    batch_id: int | None = None,
+    text_only: bool = True,
+    with_local_cards: bool = False,
+    external_screenshots: bool = False,
+    progress=None,
+) -> list[PublicationItem]:
+    items = build_publication_items(session, include_pending=include_pending, batch_id=batch_id)
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'><title>OSINT report</title>",
         "<style>body{font-family:Arial,sans-serif;margin:32px;line-height:1.45}.pub{margin:28px 0}.num{text-align:center;font-weight:700}.osint{font-style:italic}.date{font-weight:700;background:#fff59d;display:inline-block;padding:2px 4px}img{max-width:760px;width:100%;border:1px solid #d6dde6}</style>",
@@ -239,7 +279,9 @@ def build_osint_html_report(session: Session, out_path: Path, include_pending: b
         if item.place_name != current_place:
             current_place = item.place_name
             parts.append(f"<h2>{html.escape(item.place_name)}</h2>")
-        screenshot_path = ensure_publication_screenshot(session, item)
+        screenshot_path = None
+        if not text_only:
+            screenshot_path = ensure_publication_screenshot(session, item, with_local_cards=with_local_cards, external_screenshots=external_screenshots)
         parts.append(f"<section class='pub'><p class='num'>Публикация №{item.publication_number}</p>")
         parts.append("<p class='osint'>OSINT</p>")
         parts.append(f"<p><span class='date'>{item.posted_at_local:%d.%m.%Y} г.</span></p>")
@@ -251,13 +293,13 @@ def build_osint_html_report(session: Session, out_path: Path, include_pending: b
         parts.append(f"<p>Источник: {html.escape(source)}</p><p>Время публикации: {item.posted_at_local:%H:%M}</p>")
         if item.url:
             parts.append(f"<p>Ссылка: <a href='{html.escape(item.url)}'>{html.escape(item.url)}</a></p>")
-        parts.append(f"<p><em>Подтверждающий материал: {'фотоматериал.' if screenshot_path else 'ссылка на публикацию.'}</em></p>")
-        if screenshot_path and Path(screenshot_path).exists():
+        parts.append("<p><em>Подтверждающий материал: фотоматериал.</em></p>")
+        if not text_only and screenshot_path and Path(screenshot_path).exists():
             parts.append(f"<img src='{html.escape(Path(screenshot_path).as_posix())}' alt='publication evidence'>")
         if item.text:
             parts.append(f"<p><strong>Текст публикации:</strong></p><p>{html.escape(item.text).replace(chr(10), '<br>')}</p>")
         parts.append(f"<p>Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}</p></section>")
-    unmatched = _unmatched_cases(session, include_pending=include_pending)
+    unmatched = _unmatched_cases(session, include_pending=include_pending, batch_id=batch_id)
     if unmatched:
         parts.append("<h2>Кейсы без найденных публикаций</h2><ul>")
         for case in unmatched:
@@ -265,6 +307,7 @@ def build_osint_html_report(session: Session, out_path: Path, include_pending: b
         parts.append("</ul>")
     parts.append("</body></html>")
     out_path.write_text("\n".join(parts), encoding="utf-8")
+    return items
 
 
 def build_technical_docx_report(session: Session, out_path: Path) -> None:
@@ -345,11 +388,12 @@ def build_technical_html_report(session: Session, out_path: Path) -> None:
     out_path.write_text("\n".join(parts), encoding="utf-8")
 
 
-def build_zip(session: Session, export_dir: Path, source_docx: str | None) -> Path:
+def build_zip(session: Session, export_dir: Path, source_docx: str | None, used_evidence_paths: list[str] | None = None, batch_id: int | None = None) -> Path:
     zip_path = export_dir / "evidence.zip"
     metadata = {
         "created_at": datetime.utcnow().isoformat(),
-        "cases": [case.id for case in session.query(Case).all()],
+        "batch_id": batch_id,
+        "cases": [case.id for case in (session.query(Case).filter(Case.batch_id == batch_id) if batch_id is not None else session.query(Case)).all()],
         "caveat": FIRMS_CAVEAT,
     }
     (export_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -361,12 +405,10 @@ def build_zip(session: Session, export_dir: Path, source_docx: str | None) -> Pa
         for file in export_dir.rglob("*"):
             if file.is_file() and file != zip_path:
                 zf.write(file, file.relative_to(export_dir).as_posix())
-        for folder in ["data/screenshots", "data/maps"]:
-            base = Path(folder)
-            if base.exists():
-                for path in base.glob("*"):
-                    if path.is_file():
-                        zf.write(path, f"{base.name}/{path.name}")
+        for value in used_evidence_paths or []:
+            path = Path(value)
+            if path.exists() and path.is_file():
+                zf.write(path, f"evidence/{path.name}")
     return zip_path
 
 
@@ -375,23 +417,64 @@ def export_report(
     job_id: int | None = None,
     source_docx: str | None = None,
     style: str = "osint",
-    include_technical_appendix: bool = True,
+    include_technical_appendix: bool = False,
     include_pending: bool = False,
+    batch_id: int | None = None,
+    text_only: bool = True,
+    with_local_cards: bool = False,
+    external_screenshots: bool | None = None,
+    progress=print,
 ) -> Export:
+    external_screenshots = get_settings().export_external_telegram_screenshots if external_screenshots is None else external_screenshots
+    items = build_publication_items(session, include_pending=include_pending, batch_id=batch_id)
+    if style == "osint" and not items:
+        raise RuntimeError("No approved publications for report")
     export_dir = _export_dir()
     docx_path = export_dir / "report.docx"
     html_path = export_dir / "report.html"
+    used_evidence_paths: list[str] = []
     if style == "technical":
+        if progress:
+            progress("saving technical docx")
         build_technical_docx_report(session, docx_path)
         build_technical_html_report(session, html_path)
     else:
-        build_osint_docx_report(session, docx_path, include_pending=include_pending)
-        build_osint_html_report(session, html_path, include_pending=include_pending)
+        if progress:
+            progress(f"report items count: {len(items)}")
+            progress("saving docx")
+        doc_items = build_osint_docx_report(
+            session,
+            docx_path,
+            include_pending=include_pending,
+            batch_id=batch_id,
+            text_only=text_only,
+            with_local_cards=with_local_cards,
+            external_screenshots=external_screenshots,
+            progress=progress,
+        )
+        if not text_only:
+            used_evidence_paths.extend([p for item in doc_items for p in [item.screenshot_path, item.evidence_card_path] if p])
+        if progress:
+            progress("saving html")
+        html_items = build_osint_html_report(
+            session,
+            html_path,
+            include_pending=include_pending,
+            batch_id=batch_id,
+            text_only=text_only,
+            with_local_cards=with_local_cards,
+            external_screenshots=external_screenshots,
+        )
+        if not text_only:
+            used_evidence_paths.extend([p for item in html_items for p in [item.screenshot_path, item.evidence_card_path] if p])
         if include_technical_appendix:
             build_technical_docx_report(session, export_dir / "technical_report.docx")
             build_technical_html_report(session, export_dir / "technical_report.html")
-    zip_path = build_zip(session, export_dir, source_docx)
+    if progress:
+        progress("building zip")
+    zip_path = build_zip(session, export_dir, source_docx, used_evidence_paths=sorted(set(used_evidence_paths)), batch_id=batch_id)
     export = Export(
+        batch_id=batch_id,
         job_id=job_id,
         title="Striker OSINT evidence report" if style == "osint" else "Striker technical report",
         docx_path=str(docx_path),
@@ -400,4 +483,6 @@ def export_report(
     )
     session.add(export)
     session.flush()
+    if progress:
+        progress(f"done path={zip_path}")
     return export

@@ -101,9 +101,31 @@ class MessagePlace(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0)
 
 
+class CaseBatch(Base):
+    __tablename__ = "case_batches"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+    source_filename: Mapped[str | None] = mapped_column(String)
+    original_path: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String)
+    document_date: Mapped[date | None] = mapped_column(Date)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    night_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    rollover_hour: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, default="active", nullable=False)
+    cases_count: Mapped[int] = mapped_column(Integer, default=0)
+    matches_count: Mapped[int] = mapped_column(Integer, default=0)
+    approved_count: Mapped[int] = mapped_column(Integer, default=0)
+    pending_count: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
 class Case(Base):
     __tablename__ = "cases"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("case_batches.id"))
     source_docx: Mapped[str | None] = mapped_column(String)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     event_date: Mapped[date | None] = mapped_column(Date)
@@ -148,6 +170,7 @@ class CaseMatch(Base):
 class FirmsPoint(Base):
     __tablename__ = "firms_points"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("case_batches.id"))
     case_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("cases.id"))
     source: Mapped[str] = mapped_column(String, nullable=False)
     satellite: Mapped[str | None] = mapped_column(String)
@@ -168,6 +191,7 @@ class FirmsPoint(Base):
 class EvidenceFile(Base):
     __tablename__ = "evidence_files"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("case_batches.id"))
     case_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("cases.id"))
     message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("messages.id"))
     file_type: Mapped[str] = mapped_column(String, nullable=False)
@@ -179,6 +203,7 @@ class EvidenceFile(Base):
 class Export(Base):
     __tablename__ = "exports"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("case_batches.id"))
     job_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("jobs.id"))
     title: Mapped[str | None] = mapped_column(String)
     docx_path: Mapped[str | None] = mapped_column(String)
@@ -190,6 +215,7 @@ class Export(Base):
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("case_batches.id"))
     kind: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, default="queued", nullable=False)
     input_path: Mapped[str | None] = mapped_column(String)

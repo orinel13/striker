@@ -1,15 +1,27 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Dashboard</h1>
+<div class="panel">
+  <h2>Current batch</h2>
+  {% if current_batch %}
+  <p><strong>{{ current_batch.source_filename or current_batch.title }}</strong> — {{ current_batch.status }}</p>
+  <p>Cases: {{ current_batch.cases_count }} | Pending: {{ current_batch.pending_count }} | Approved: {{ current_batch.approved_count }}</p>
+  <p><a class="button" href="/review">Review current batch</a> <a class="button" href="/exports">Build report</a> <a class="button" href="/batches">Batches</a></p>
+  {% else %}
+  <p>No current batch.</p>
+  {% endif %}
+</div>
 <div class="grid">
   <div class="metric"><strong>{{ jobs }}</strong><br>Jobs</div>
   <div class="metric"><strong>{{ cases }}</strong><br>Cases</div>
   <div class="metric"><strong>{{ messages }}</strong><br>Messages</div>
   <div class="metric"><strong>{{ messages_recent }}</strong><br>Messages last archive window</div>
+  <div class="metric"><strong>{{ channels_count }}</strong><br>Channels</div>
   <div class="metric"><strong>{{ pending_review }}</strong><br>Pending review</div>
   <div class="metric"><strong>{{ exports }}</strong><br>Exports</div>
 </div>
 <div class="panel">
+  <h2>Telegram archive</h2>
   <p>Oldest message: {{ oldest_message or '' }}</p>
   <p>Newest message: {{ newest_message or '' }}</p>
   <p>Latest export: {% if latest_export %}<a href="/exports/{{ latest_export.id }}/download?file=docx">{{ latest_export.created_at }}</a>{% else %}-{% endif %}</p>

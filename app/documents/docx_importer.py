@@ -29,7 +29,7 @@ def iter_docx_blocks(path: Path | str) -> list[str]:
     return blocks
 
 
-def _case_from_parsed(session: Session, parsed: ParsedStrikeRow, source: str, gazetteer: Gazetteer) -> Case | None:
+def _case_from_parsed(session: Session, parsed: ParsedStrikeRow, source: str, gazetteer: Gazetteer, batch_id: int | None = None) -> Case | None:
     if not any([parsed.event_date, parsed.event_time_local, parsed.time_range_start, parsed.place_name_raw, parsed.lat is not None, parsed.lon is not None]):
         return None
     lat = parsed.lat
@@ -42,6 +42,7 @@ def _case_from_parsed(session: Session, parsed: ParsedStrikeRow, source: str, ga
             lon = place_match.place.lon
             coordinate_source = "gazetteer"
     case = Case(
+        batch_id=batch_id,
         source_docx=source,
         raw_text=parsed.raw_text,
         event_date=parsed.event_date,
@@ -73,6 +74,7 @@ def import_docx(
     period_end: date | None = None,
     night_mode: bool = False,
     rollover_hour: int = 12,
+    batch_id: int | None = None,
 ) -> list[Case]:
     settings = get_settings()
     source = str(path)
@@ -89,7 +91,7 @@ def import_docx(
     )
     if parsed_rows:
         for parsed in parsed_rows:
-            case = _case_from_parsed(session, parsed, source, gazetteer)
+            case = _case_from_parsed(session, parsed, source, gazetteer, batch_id=batch_id)
             if case:
                 cases.append(case)
         session.flush()
@@ -106,6 +108,7 @@ def import_docx(
         if not any([event_date, coords, place_match]):
             continue
         case = Case(
+            batch_id=batch_id,
             source_docx=source,
             raw_text=block,
             event_date=event_date,
