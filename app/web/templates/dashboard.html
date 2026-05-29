@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="grid">
+  <div class="metric"><strong>{{ jobs }}</strong><br>Jobs</div>
+  <div class="metric"><strong>{{ cases }}</strong><br>Cases</div>
+  <div class="metric"><strong>{{ messages }}</strong><br>Messages</div>
+  <div class="metric"><strong>{{ exports }}</strong><br>Exports</div>
+</div>
+{% endblock %}
+

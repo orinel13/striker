@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Channel candidates</h1>
+<table><tr><th>ID</th><th>Username</th><th>Mentions</th><th>Score</th><th>Status</th><th>Action</th></tr>
+{% for c in candidates %}
+<tr><td>{{ c.id }}</td><td>{{ c.username }}</td><td>{{ c.mentions_count }}</td><td>{{ c.thematic_score }}</td><td>{{ c.status }}</td><td>
+<form method="post" action="/channel-candidates/{{ c.id }}/approve" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Approve</button></form>
+<form method="post" action="/channel-candidates/{{ c.id }}/reject" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Reject</button></form>
+</td></tr>
+{% endfor %}
+</table>
+{% endblock %}
+

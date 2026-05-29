@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Channels</h1>
+<form method="post" action="/channels/collect-once"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Collect once</button></form>
+<table><tr><th>ID</th><th>Username</th><th>Title</th><th>Status</th><th>Last message</th></tr>
+{% for c in channels %}<tr><td>{{ c.id }}</td><td>{{ c.username }}</td><td>{{ c.title or '' }}</td><td>{{ c.status }}</td><td>{{ c.last_message_id }}</td></tr>{% endfor %}
+</table>
+{% endblock %}
+

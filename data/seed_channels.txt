@@ -1,0 +1,2 @@
+# One Telegram channel username per line, without @. Example:
+# suspilne_news

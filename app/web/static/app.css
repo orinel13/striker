@@ -1,0 +1,16 @@
+body{margin:0;font-family:Arial,sans-serif;background:#f5f7fa;color:#172033}
+a{color:#0f5fb8;text-decoration:none} a:hover{text-decoration:underline}
+header{display:flex;align-items:center;justify-content:space-between;background:#172033;color:white;padding:12px 24px}
+header a{color:white;margin-right:14px}
+main{max-width:1180px;margin:24px auto;padding:0 16px}
+table{width:100%;border-collapse:collapse;background:white}
+th,td{border:1px solid #d6dde6;padding:8px;text-align:left;vertical-align:top}
+th{background:#eef2f6}
+.panel{background:white;border:1px solid #d6dde6;border-radius:8px;padding:16px;margin:16px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.metric{background:white;border:1px solid #d6dde6;border-radius:8px;padding:16px}
+button,.button{background:#175cd3;color:white;border:0;border-radius:6px;padding:8px 12px;cursor:pointer;display:inline-block}
+input[type=text],input[type=password],input[type=file]{padding:8px;border:1px solid #b8c1cc;border-radius:6px;width:100%;max-width:480px}
+.error{background:#fee2e2;border:1px solid #fca5a5;padding:10px;border-radius:6px}
+.muted{color:#64748b}
+

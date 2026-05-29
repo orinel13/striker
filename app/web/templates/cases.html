@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Cases</h1>
+<form method="post" action="/cases/import-latest" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Import latest docx</button></form>
+<form method="post" action="/cases/match" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Match</button></form>
+<table><tr><th>ID</th><th>Date</th><th>Place</th><th>Coordinates</th><th>Text</th></tr>
+{% for c in cases %}<tr><td><a href="/cases/{{ c.id }}">{{ c.id }}</a></td><td>{{ c.event_date or '' }}</td><td>{{ c.place_name or '' }}</td><td>{{ c.lat or '' }}, {{ c.lon or '' }}</td><td>{{ c.raw_text[:500] }}</td></tr>{% endfor %}
+</table>
+{% endblock %}
+

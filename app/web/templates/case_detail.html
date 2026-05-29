@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Case {{ case.id }}</h1>
+<div class="panel">
+<p>{{ case.raw_text }}</p>
+<p class="muted">{{ case.event_date or '' }} {{ case.event_time_local or '' }} {{ case.place_name or '' }} {{ case.lat or '' }}, {{ case.lon or '' }}</p>
+</div>
+{% endblock %}
+

@@ -1,0 +1,14 @@
+[Unit]
+Description=Striker worker loop
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/striker
+EnvironmentFile=/opt/striker/.env
+ExecStart=/opt/striker/.venv/bin/python -m app.cli worker-loop
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
