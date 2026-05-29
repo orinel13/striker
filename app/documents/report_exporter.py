@@ -62,9 +62,14 @@ def _all_case_matches(session: Session, case_id: int) -> list[CaseMatch]:
     return session.query(CaseMatch).filter(CaseMatch.case_id == case_id).order_by(CaseMatch.total_score.desc()).all()
 
 
-def telegram_matches_for_case(session: Session, case_id: int) -> list[tuple[CaseMatch, Message]]:
+def telegram_matches_for_case(session: Session, case_id: int, include_pending: bool = False) -> list[tuple[CaseMatch, Message]]:
     rows: list[tuple[CaseMatch, Message]] = []
-    matches = session.query(CaseMatch).filter(CaseMatch.case_id == case_id, CaseMatch.message_id.isnot(None)).all()
+    statuses = ["approved", "auto_approved"] + (["pending"] if include_pending else [])
+    matches = (
+        session.query(CaseMatch)
+        .filter(CaseMatch.case_id == case_id, CaseMatch.message_id.isnot(None), CaseMatch.review_status.in_(statuses))
+        .all()
+    )
     for match in matches:
         message = session.get(Message, match.message_id)
         if message:
@@ -76,12 +81,12 @@ def _case_place(case: Case) -> str:
     return case.place_name or case.reference_text or "Неустановленный населённый пункт"
 
 
-def build_publication_items(session: Session) -> list[PublicationItem]:
+def build_publication_items(session: Session, include_pending: bool = False) -> list[PublicationItem]:
     items_by_key: dict[tuple[str, int], PublicationItem] = {}
     order: list[tuple[str, int]] = []
     for case in session.query(Case).order_by(Case.id).all():
         place_name = _case_place(case)
-        for match, message in telegram_matches_for_case(session, case.id):
+        for match, message in telegram_matches_for_case(session, case.id, include_pending=include_pending):
             dedupe_id = message.canonical_message_id or message.id
             key = (place_name, dedupe_id)
             channel = session.get(Channel, message.channel_id)
@@ -149,8 +154,8 @@ def ensure_publication_screenshot(session: Session, item: PublicationItem) -> st
     return None
 
 
-def _unmatched_cases(session: Session) -> list[Case]:
-    return [case for case in session.query(Case).order_by(Case.id).all() if not telegram_matches_for_case(session, case.id)]
+def _unmatched_cases(session: Session, include_pending: bool = False) -> list[Case]:
+    return [case for case in session.query(Case).order_by(Case.id).all() if not telegram_matches_for_case(session, case.id, include_pending=include_pending)]
 
 
 def _add_no_publications_appendix(doc: Document, cases: list[Case]) -> None:
@@ -168,11 +173,11 @@ def _add_no_publications_appendix(doc: Document, cases: list[Case]) -> None:
         row[3].text = case.raw_text[:500]
 
 
-def build_osint_docx_report(session: Session, out_path: Path) -> None:
+def build_osint_docx_report(session: Session, out_path: Path, include_pending: bool = False) -> None:
     doc = Document()
     doc.add_heading("OSINT-подборка подтверждающих публикаций", 0)
     doc.add_paragraph("Автоматическая ретроспективная подборка из Telegram-архива. Не является live tracking.")
-    items = build_publication_items(session)
+    items = build_publication_items(session, include_pending=include_pending)
     if not items:
         doc.add_paragraph("По загруженным кейсам не найдено Telegram-публикаций, удовлетворяющих критериям сопоставления.")
         _add_no_publications_appendix(doc, session.query(Case).order_by(Case.id).all())
@@ -215,12 +220,12 @@ def build_osint_docx_report(session: Session, out_path: Path) -> None:
             doc.add_paragraph(item.text)
         doc.add_paragraph(f"Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}")
         doc.add_paragraph("")
-    _add_no_publications_appendix(doc, _unmatched_cases(session))
+    _add_no_publications_appendix(doc, _unmatched_cases(session, include_pending=include_pending))
     doc.save(out_path)
 
 
-def build_osint_html_report(session: Session, out_path: Path) -> None:
-    items = build_publication_items(session)
+def build_osint_html_report(session: Session, out_path: Path, include_pending: bool = False) -> None:
+    items = build_publication_items(session, include_pending=include_pending)
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'><title>OSINT report</title>",
         "<style>body{font-family:Arial,sans-serif;margin:32px;line-height:1.45}.pub{margin:28px 0}.num{text-align:center;font-weight:700}.osint{font-style:italic}.date{font-weight:700;background:#fff59d;display:inline-block;padding:2px 4px}img{max-width:760px;width:100%;border:1px solid #d6dde6}</style>",
@@ -252,7 +257,7 @@ def build_osint_html_report(session: Session, out_path: Path) -> None:
         if item.text:
             parts.append(f"<p><strong>Текст публикации:</strong></p><p>{html.escape(item.text).replace(chr(10), '<br>')}</p>")
         parts.append(f"<p>Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}</p></section>")
-    unmatched = _unmatched_cases(session)
+    unmatched = _unmatched_cases(session, include_pending=include_pending)
     if unmatched:
         parts.append("<h2>Кейсы без найденных публикаций</h2><ul>")
         for case in unmatched:
@@ -371,6 +376,7 @@ def export_report(
     source_docx: str | None = None,
     style: str = "osint",
     include_technical_appendix: bool = True,
+    include_pending: bool = False,
 ) -> Export:
     export_dir = _export_dir()
     docx_path = export_dir / "report.docx"
@@ -379,8 +385,8 @@ def export_report(
         build_technical_docx_report(session, docx_path)
         build_technical_html_report(session, html_path)
     else:
-        build_osint_docx_report(session, docx_path)
-        build_osint_html_report(session, html_path)
+        build_osint_docx_report(session, docx_path, include_pending=include_pending)
+        build_osint_html_report(session, html_path, include_pending=include_pending)
         if include_technical_appendix:
             build_technical_docx_report(session, export_dir / "technical_report.docx")
             build_technical_html_report(session, export_dir / "technical_report.html")
@@ -395,4 +401,3 @@ def export_report(
     session.add(export)
     session.flush()
     return export
-

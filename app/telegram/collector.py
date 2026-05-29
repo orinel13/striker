@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import session_scope
 from app.geo.gazetteer import Gazetteer
-from app.models import Channel, Message, MessageKeyword, MessagePlace
+from app.models import CaseMatch, Channel, EvidenceFile, Message, MessageKeyword, MessagePlace
 from app.nlp.extractors import extract_coordinates, extract_time
 from app.nlp.keywords import find_keywords
 from app.nlp.language import detect_language
@@ -105,7 +105,11 @@ async def _collect_channel(username: str, force_latest: bool = False) -> int:
             try:
                 gazetteer = Gazetteer(session)
                 messages = await _collect_tg_messages(client, entity, min_id, settings.max_history_batch, force_latest=force_latest)
+                archive_cutoff = datetime.utcnow() - timedelta(days=settings.telegram_archive_days)
                 for tg_message in messages:
+                    posted_at = tg_message.date.replace(tzinfo=None)
+                    if posted_at < archive_cutoff:
+                        continue
                     existing = (
                         session.query(Message)
                         .filter(Message.channel_id == channel.id, Message.tg_message_id == tg_message.id)
@@ -131,7 +135,7 @@ async def _collect_channel(username: str, force_latest: bool = False) -> int:
                     message = Message(
                         channel_id=channel.id,
                         tg_message_id=tg_message.id,
-                        posted_at=tg_message.date.replace(tzinfo=None),
+                        posted_at=posted_at,
                         collected_at=datetime.utcnow(),
                         text=text,
                         normalized_text=normalized,
@@ -243,4 +247,26 @@ async def collect_loop() -> None:
     settings = get_settings()
     while True:
         await collect_once()
+        with session_scope() as session:
+            prune_archive(session, settings.telegram_archive_days)
         await asyncio.sleep(settings.collect_interval_seconds)
+
+
+def prune_archive(session: Session, days: int, vacuum: bool = False) -> int:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    old_ids = [row[0] for row in session.query(Message.id).filter(Message.posted_at < cutoff).all()]
+    if not old_ids:
+        return 0
+    session.query(CaseMatch).filter(CaseMatch.message_id.in_(old_ids)).delete(synchronize_session=False)
+    session.query(MessageKeyword).filter(MessageKeyword.message_id.in_(old_ids)).delete(synchronize_session=False)
+    session.query(MessagePlace).filter(MessagePlace.message_id.in_(old_ids)).delete(synchronize_session=False)
+    session.query(EvidenceFile).filter(EvidenceFile.message_id.in_(old_ids)).delete(synchronize_session=False)
+    session.query(Message).filter(Message.canonical_message_id.in_(old_ids)).update(
+        {Message.canonical_message_id: None},
+        synchronize_session=False,
+    )
+    session.query(Message).filter(Message.id.in_(old_ids)).delete(synchronize_session=False)
+    if vacuum:
+        session.commit()
+        session.execute(__import__("sqlalchemy").text("VACUUM"))
+    return len(old_ids)

@@ -5,7 +5,21 @@
   <div class="metric"><strong>{{ jobs }}</strong><br>Jobs</div>
   <div class="metric"><strong>{{ cases }}</strong><br>Cases</div>
   <div class="metric"><strong>{{ messages }}</strong><br>Messages</div>
+  <div class="metric"><strong>{{ messages_recent }}</strong><br>Messages last archive window</div>
+  <div class="metric"><strong>{{ pending_review }}</strong><br>Pending review</div>
   <div class="metric"><strong>{{ exports }}</strong><br>Exports</div>
 </div>
+<div class="panel">
+  <p>Oldest message: {{ oldest_message or '' }}</p>
+  <p>Newest message: {{ newest_message or '' }}</p>
+  <p>Latest export: {% if latest_export %}<a href="/exports/{{ latest_export.id }}/download?file=docx">{{ latest_export.created_at }}</a>{% else %}-{% endif %}</p>
+</div>
+<div class="panel">
+  <h2>Matches by priority/status</h2>
+  <table><tr><th>Priority</th><th>Status</th><th>Count</th></tr>
+  {% for priority, status, count in match_stats %}
+  <tr><td>{{ priority }}</td><td>{{ status }}</td><td>{{ count }}</td></tr>
+  {% endfor %}
+  </table>
+</div>
 {% endblock %}
-

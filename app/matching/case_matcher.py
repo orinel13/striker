@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -64,7 +65,26 @@ NOISE = [
     "доставка",
     "маршрут",
     "пассажирские перевозки",
+    "пассажирские",
+    "работа",
+    "робота",
+    "спорт",
+    "ліцей",
+    "лицей",
+    "навчальний простір",
+    "суд",
+    "сизо",
+    "сізо",
+    "мер",
+    "блогер",
+    "блогерка",
+    "косметолог",
+    "силікон",
+    "силикон",
+    "школа",
 ]
+GENERIC_THREAT = ["масований ракетний удар", "массовый ракетный удар", "ймовірність комбінованої атаки", "комбінованої атаки", "зліт міг-31к", "миг-31к"]
+GENERIC_MONITOR_CHANNELS = ["war_monitor", "eradarrua", "radar_plus_bpla", "povitryanatrivogaaa", "monitor"]
 
 PLACE_ALIASES = {
     "краматорск": ["краматорск", "краматорськ", "kramatorsk"],
@@ -123,6 +143,7 @@ class ScoreResult:
     geo_direct: bool
     strong_impact: bool
     threat_only: bool
+    generic_channel: bool
 
 
 def localize_message_time(posted_at: datetime, timezone_name: str | None = None) -> datetime:
@@ -217,6 +238,11 @@ def _channel_text(channel: Channel | None) -> str:
     return normalize_text(" ".join([channel.username or "", channel.title or ""])) if channel else ""
 
 
+def _is_generic_monitor(channel: Channel | None) -> bool:
+    text = _channel_text(channel)
+    return any(marker in text for marker in GENERIC_MONITOR_CHANNELS)
+
+
 def geo_score_preloaded(case: Case, prepared: PreparedMessage, aliases: list[str]) -> tuple[float, bool, bool]:
     text = prepared.message.normalized_text
     if aliases and _contains_alias_token(text, aliases):
@@ -254,8 +280,19 @@ def score_prepared_message(case: Case, prepared: PreparedMessage, aliases: list[
     geo_value, geo_direct, geo_channel_only = geo_score_preloaded(case, prepared, aliases)
     source_value = 0.1 if prepared.message.url else 0.0
     total = round(time_value * 0.35 + geo_value * 0.3 + keyword_value * 0.25 + source_value, 3)
+    generic_channel = _is_generic_monitor(prepared.channel)
+    generic_threat = _contains_any(text, GENERIC_THREAT)
     priority = _priority(total, time_value, geo_direct, strong, threat, geo_channel_only)
     reasons = list(keyword_reasons)
+    if (generic_channel or generic_threat) and not geo_direct:
+        reasons.append("reject_generic_threat")
+        priority = "NO DATA"
+    if generic_channel and priority == "A":
+        priority = "B"
+    if threat and not strong and priority in {"A", "B"}:
+        priority = "C" if geo_direct else "NO DATA"
+    if geo_channel_only and not strong and priority == "B":
+        priority = "C"
     if time_value <= 0:
         reasons.append("rejected_time")
     if geo_value <= 0:
@@ -269,7 +306,7 @@ def score_prepared_message(case: Case, prepared: PreparedMessage, aliases: list[
         reasons.append("rejected_total")
     if geo_channel_only and priority == "A":
         priority = "B"
-    return ScoreResult(time_value, geo_value, keyword_value, source_value, total, priority, reasons, geo_direct, strong, threat)
+    return ScoreResult(time_value, geo_value, keyword_value, source_value, total, priority, reasons, geo_direct, strong, threat, generic_channel)
 
 
 def score_message_for_case(session: Session, case: Case, message: Message) -> dict:
@@ -348,16 +385,17 @@ def _accepted_sort_key(item: tuple[Message, ScoreResult]) -> tuple[int, float, d
     return order.get(item[1].priority, 99), -item[1].total, item[0].posted_at
 
 
-def match_cases(session: Session, progress: bool = True) -> int:
+def match_cases(session: Session, progress: bool = True) -> dict:
     session.query(CaseMatch).delete()
     cases = session.query(Case).order_by(Case.id).all()
     created = 0
+    stats = {"cases": len(cases), "matches": 0, "A": 0, "B": 0, "C": 0, "pending": 0}
     for index, case in enumerate(cases, start=1):
         aliases = _case_aliases(case)
         messages, _start_utc, _end_utc = candidates_for_case(session, case)
         prepared_by_id = _prepare_messages(session, messages)
         accepted: list[tuple[Message, ScoreResult]] = []
-        rejected = {"rejected_time": 0, "rejected_geo": 0, "rejected_keyword": 0, "rejected_noise": 0, "rejected_total": 0}
+        rejected = {"rejected_time": 0, "rejected_geo": 0, "rejected_keyword": 0, "rejected_noise": 0, "rejected_total": 0, "reject_generic_threat": 0}
         seen: set[int] = set()
         for message in messages:
             dedupe_key = message.canonical_message_id or message.id
@@ -372,7 +410,11 @@ def match_cases(session: Session, progress: bool = True) -> int:
                     if reason in rejected:
                         rejected[reason] += 1
         accepted.sort(key=_accepted_sort_key)
-        for message, score in accepted[:10]:
+        selected = accepted[: get_settings().match_max_per_case]
+        priority_counts = {"A": 0, "B": 0, "C": 0}
+        for message, score in selected:
+            priority_counts[score.priority] = priority_counts.get(score.priority, 0) + 1
+            review_status = "auto_approved" if score.priority == "A" and score.geo_direct and score.strong_impact else "pending"
             session.add(
                 CaseMatch(
                     case_id=case.id,
@@ -385,9 +427,29 @@ def match_cases(session: Session, progress: bool = True) -> int:
                     total_score=score.total,
                     priority=score.priority,
                     explanation=f"Fast match: time={score.time_score}, geo={score.geo_score}, keyword={score.keyword_score}",
+                    review_status=review_status,
+                    score_details_json=json.dumps(
+                        {
+                            "time_score": score.time_score,
+                            "geo_score": score.geo_score,
+                            "keyword_score": score.keyword_score,
+                            "source_score": score.source_score,
+                            "geo_direct": score.geo_direct,
+                            "strong_impact": score.strong_impact,
+                            "threat_only": score.threat_only,
+                            "generic_channel": score.generic_channel,
+                            "reasons": score.reasons,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    reject_reason=";".join(score.reasons) if score.reasons else None,
                 )
             )
             created += 1
+            stats["matches"] += 1
+            stats[score.priority] = stats.get(score.priority, 0) + 1
+            if review_status == "pending":
+                stats["pending"] += 1
         firms_added = 0
         for point in nearby_firms_points(session, case):
             session.add(
@@ -406,17 +468,18 @@ def match_cases(session: Session, progress: bool = True) -> int:
             )
             created += 1
             firms_added += 1
-        if not accepted and not firms_added:
+        if not selected and not firms_added:
             session.add(CaseMatch(case_id=case.id, match_type="none", priority="NO DATA", explanation="NO DATA"))
             created += 1
         if progress:
             place = case.place_name or case.reference_text or "unknown"
             print(
-                f"Case {index}/{len(cases)} {place}: candidates={len(messages)} accepted={len(accepted[:10])} "
+                f"Case {index}/{len(cases)} {place}: candidates={len(messages)} accepted={len(selected)} "
+                f"A={priority_counts.get('A', 0)} B={priority_counts.get('B', 0)} C={priority_counts.get('C', 0)} "
                 + " ".join(f"{key}={value}" for key, value in rejected.items())
             )
     print(f"Created {created} matches.")
-    return created
+    return stats
 
 
 def legacy_match_cases(session: Session) -> int:

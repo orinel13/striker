@@ -46,6 +46,8 @@ class Settings:
     collect_interval_seconds: int
     telegram_request_sleep_seconds: int
     max_history_batch: int
+    telegram_archive_days: int
+    match_max_per_case: int
     firms_map_key: str
     firms_default_radius_km: float
     local_timezone: str
@@ -77,6 +79,8 @@ def get_settings() -> Settings:
         collect_interval_seconds=_int("COLLECT_INTERVAL_SECONDS", 900),
         telegram_request_sleep_seconds=_int("TELEGRAM_REQUEST_SLEEP_SECONDS", 3),
         max_history_batch=_int("MAX_HISTORY_BATCH", 100),
+        telegram_archive_days=_int("TELEGRAM_ARCHIVE_DAYS", 3),
+        match_max_per_case=_int("MATCH_MAX_PER_CASE", 5),
         firms_map_key=os.getenv("FIRMS_MAP_KEY", ""),
         firms_default_radius_km=_float("FIRMS_DEFAULT_RADIUS_KM", 15),
         local_timezone=os.getenv("LOCAL_TIMEZONE", "Europe/Kyiv"),
@@ -118,4 +122,3 @@ def ensure_data_dirs() -> None:
         "data/tmp",
     ]:
         Path(path).mkdir(parents=True, exist_ok=True)
-

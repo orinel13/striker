@@ -68,6 +68,12 @@ def _ensure_runtime_columns() -> None:
         "jobs": {
             "params_json": "TEXT",
         },
+        "case_matches": {
+            "review_status": "VARCHAR DEFAULT 'pending'",
+            "review_note": "TEXT",
+            "score_details_json": "TEXT",
+            "reject_reason": "TEXT",
+        },
     }
     inspector = inspect(engine)
     with engine.begin() as connection:

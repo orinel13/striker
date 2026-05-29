@@ -49,6 +49,7 @@ def test_osint_docx_report_human_structure(session, tmp_path, monkeypatch):
                 priority="A",
                 total_score=0.9,
                 explanation="match",
+                review_status="auto_approved",
             )
         )
     session.add(CaseMatch(case_id=c4.id, match_type="none", priority="NO DATA", explanation="none"))
@@ -72,3 +73,31 @@ def test_osint_docx_report_human_structure(session, tmp_path, monkeypatch):
     assert "https://t.me/sloviansk/1" in text
     assert "Дружковка" in text
     assert "Публикация №4" not in text
+
+
+def test_osint_report_excludes_pending_by_default(session, tmp_path, monkeypatch):
+    monkeypatch.setattr(report_exporter, "ensure_publication_screenshot", lambda session, item: None)
+    channel = Channel(username="kramatorsk", title="Краматорск")
+    session.add(channel)
+    session.flush()
+    case = Case(raw_text="case", place_name="Краматорск")
+    session.add(case)
+    session.flush()
+    msg = _message(session, channel, 1, "pending text", "https://t.me/kramatorsk/1", datetime(2024, 5, 29, 7, 0))
+    session.add(
+        CaseMatch(
+            case_id=case.id,
+            message_id=msg.id,
+            match_type="telegram",
+            priority="B",
+            total_score=0.7,
+            explanation="pending",
+            review_status="pending",
+        )
+    )
+    session.commit()
+    out = tmp_path / "report.docx"
+    build_osint_docx_report(session, out)
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    assert "Публикация №1" not in text
+    assert "pending text" not in text

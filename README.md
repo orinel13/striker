@@ -211,6 +211,29 @@ sudo systemctl start striker-worker striker-collector
 
 `match-cases` использует быстрый candidate-first алгоритм: сначала ограничивает сообщения SQL-окном по времени и городским alias, затем считает scoring только по кандидатам. Это должно завершаться за секунды или минуты на нескольких тысячах сообщений.
 
+## Review и качество матчей
+
+`match-cases` создаёт Telegram-кандидаты со статусами review:
+
+- `auto_approved` — сильное совпадение A с прямым местом, сильным impact и близким временем.
+- `pending` — кандидаты B/C, требующие ручной проверки.
+- `approved` / `rejected` — ручное решение на странице `/review`.
+
+Основной OSINT-отчёт по умолчанию включает только `approved` и `auto_approved`. Pending-кандидаты не попадают в `report.docx`, пока их не принять на `/review`.
+
+Настройки:
+
+```env
+TELEGRAM_ARCHIVE_DAYS=3
+MATCH_MAX_PER_CASE=5
+```
+
+Очистка rolling archive:
+
+```bash
+/opt/striker/.venv/bin/python -m app.cli prune-archive --days 3 --vacuum
+```
+
 ## FIRMS Caveat
 
 FIRMS shows thermal anomaly / active fire detection. FIRMS does not prove the cause of a fire. Treat it only as a contextual verification layer alongside Telegram archive data, time, place, and source evidence. If FIRMS is the only nearby evidence, reports mark it with this caveat.

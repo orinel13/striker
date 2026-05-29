@@ -138,6 +138,10 @@ class CaseMatch(Base):
     total_score: Mapped[float] = mapped_column(Float, default=0)
     priority: Mapped[str] = mapped_column(String, nullable=False)
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    review_status: Mapped[str] = mapped_column(String, default="pending")
+    review_note: Mapped[str | None] = mapped_column(Text)
+    score_details_json: Mapped[str | None] = mapped_column(Text)
+    reject_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import SessionLocal
 from app.jobs import create_job
-from app.models import Case, Channel, ChannelCandidate, Export, Job, Message
+from sqlalchemy import func
+
+from app.models import Case, CaseMatch, Channel, ChannelCandidate, Export, Job, Message
 from app.security import (
     ensure_csrf,
     new_csrf_token,
@@ -73,6 +75,9 @@ def logout(request: Request, csrf_token: str = Form(...)):
 @router.get("/")
 def dashboard(request: Request, session: Session = Depends(db_session)):
     require_login(request)
+    cutoff = datetime.utcnow() - timedelta(days=get_settings().telegram_archive_days)
+    priority_rows = session.query(CaseMatch.priority, CaseMatch.review_status, func.count(CaseMatch.id)).group_by(CaseMatch.priority, CaseMatch.review_status).all()
+    latest_export = session.query(Export).order_by(Export.created_at.desc()).first()
     return render(
         request,
         "dashboard.html",
@@ -80,7 +85,13 @@ def dashboard(request: Request, session: Session = Depends(db_session)):
             "jobs": session.query(Job).count(),
             "cases": session.query(Case).count(),
             "messages": session.query(Message).count(),
+            "messages_recent": session.query(Message).filter(Message.posted_at >= cutoff).count(),
+            "oldest_message": session.query(func.min(Message.posted_at)).scalar(),
+            "newest_message": session.query(func.max(Message.posted_at)).scalar(),
             "exports": session.query(Export).count(),
+            "match_stats": priority_rows,
+            "pending_review": session.query(CaseMatch).filter(CaseMatch.review_status == "pending", CaseMatch.message_id.isnot(None)).count(),
+            "latest_export": latest_export,
         },
     )
 
@@ -173,6 +184,52 @@ def reject_candidate(request: Request, candidate_id: int, csrf_token: str = Form
 def messages(request: Request, session: Session = Depends(db_session)):
     require_login(request)
     return render(request, "messages.html", {"messages": session.query(Message).order_by(Message.posted_at.desc()).limit(200).all()})
+
+
+@router.get("/review")
+def review(request: Request, session: Session = Depends(db_session)):
+    require_login(request)
+    rows = (
+        session.query(CaseMatch, Case, Message, Channel)
+        .join(Case, Case.id == CaseMatch.case_id)
+        .join(Message, Message.id == CaseMatch.message_id)
+        .join(Channel, Channel.id == Message.channel_id)
+        .filter(CaseMatch.match_type == "telegram")
+        .order_by(Case.place_name, Case.id, CaseMatch.priority, CaseMatch.total_score.desc())
+        .all()
+    )
+    return render(request, "review.html", {"rows": rows})
+
+
+def _set_review_status(match_id: int, status: str, session: Session) -> None:
+    match = session.get(CaseMatch, match_id)
+    if not match:
+        raise HTTPException(404)
+    match.review_status = status
+
+
+@router.post("/review/matches/{match_id}/approve")
+def review_approve(request: Request, match_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    _set_review_status(match_id, "approved", session)
+    return RedirectResponse("/review", status_code=303)
+
+
+@router.post("/review/matches/{match_id}/reject")
+def review_reject(request: Request, match_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    _set_review_status(match_id, "rejected", session)
+    return RedirectResponse("/review", status_code=303)
+
+
+@router.post("/review/matches/{match_id}/pending")
+def review_pending(request: Request, match_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    _set_review_status(match_id, "pending", session)
+    return RedirectResponse("/review", status_code=303)
 
 
 @router.get("/cases")

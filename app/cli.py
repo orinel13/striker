@@ -25,7 +25,7 @@ from app.matching.evidence import render_evidence
 from app.models import Case, Channel, ChannelCandidate, Export, Job, Message
 from app.security import hash_password
 from app.telegram.client import TelegramClientFactory
-from app.telegram.collector import collect_latest_once, collect_loop, collect_once, reindex_message_places
+from app.telegram.collector import collect_latest_once, collect_loop, collect_once, prune_archive, reindex_message_places
 from app.telegram.normalizer import normalize_text
 
 
@@ -141,14 +141,22 @@ def cmd_fetch_firms(_args) -> None:
 def cmd_match_cases(_args) -> None:
     init_db()
     with session_scope() as session:
-        legacy_match_cases(session) if getattr(_args, "legacy", False) else match_cases(session)
+        stats = legacy_match_cases(session) if getattr(_args, "legacy", False) else match_cases(session)
+    if isinstance(stats, dict):
+        print(f"Matched {stats['matches']} telegram matches, pending={stats['pending']}")
 
 
 def cmd_archive_stats(_args) -> None:
     init_db()
+    settings = get_settings()
+    cutoff = datetime.utcnow() - timedelta(days=settings.telegram_archive_days)
     with session_scope() as session:
         total, min_posted, max_posted = session.query(func.count(Message.id), func.min(Message.posted_at), func.max(Message.posted_at)).one()
+        recent = session.query(func.count(Message.id)).filter(Message.posted_at >= cutoff).scalar()
+        old = session.query(func.count(Message.id)).filter(Message.posted_at < cutoff).scalar()
         print(f"total messages: {total}")
+        print(f"recent messages ({settings.telegram_archive_days}d): {recent}")
+        print(f"old messages: {old}")
         print(f"min posted_at: {min_posted}")
         print(f"max posted_at: {max_posted}")
         print("username | count | min(posted_at) | max(posted_at) | last_message_id | max(tg_message_id)")
@@ -191,6 +199,13 @@ def cmd_reindex_message_places(_args) -> None:
     with session_scope() as session:
         count = reindex_message_places(session)
     print(f"Reindexed messages: {count}")
+
+
+def cmd_prune_archive(args) -> None:
+    init_db()
+    with session_scope() as session:
+        count = prune_archive(session, args.days, vacuum=args.vacuum)
+    print(f"Pruned messages: {count}")
 
 
 def cmd_debug_match_case(args) -> None:
@@ -257,7 +272,12 @@ def cmd_render_evidence(_args) -> None:
 def cmd_export_report(_args) -> None:
     init_db()
     with session_scope() as session:
-        export = export_report(session, style=_args.style, include_technical_appendix=_args.include_technical_appendix)
+        export = export_report(
+            session,
+            style=_args.style,
+            include_technical_appendix=_args.include_technical_appendix,
+            include_pending=_args.include_pending,
+        )
         print(export.zip_path)
 
 
@@ -377,6 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("export-report")
     p.add_argument("--style", choices=["osint", "technical"], default="osint")
     p.add_argument("--include-technical-appendix", action="store_true")
+    p.add_argument("--include-pending", action="store_true")
     p.set_defaults(func=cmd_export_report)
     p = sub.add_parser("reset-channel-cursors")
     group = p.add_mutually_exclusive_group(required=True)
@@ -396,6 +417,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--date")
     p.add_argument("--limit", type=int, default=50)
     p.set_defaults(func=cmd_search_archive)
+    p = sub.add_parser("prune-archive")
+    p.add_argument("--days", type=int, default=get_settings().telegram_archive_days)
+    p.add_argument("--vacuum", action="store_true")
+    p.set_defaults(func=cmd_prune_archive)
     p = sub.add_parser("load-places")
     p.add_argument("path", nargs="?", default="data/places_extra.csv")
     p.set_defaults(func=cmd_load_places)

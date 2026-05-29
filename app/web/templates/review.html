@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review matches</h1>
+<table>
+  <tr><th>Case</th><th>Place</th><th>Priority</th><th>Status</th><th>Score</th><th>Channel</th><th>Posted</th><th>Text</th><th>Actions</th></tr>
+  {% for match, case, message, channel in rows %}
+  <tr>
+    <td>{{ case.id }}<br>{{ case.time_window_start or '' }} - {{ case.time_window_end or '' }}</td>
+    <td>{{ case.place_name or case.reference_text or '' }}</td>
+    <td>{{ match.priority }}</td>
+    <td>{{ match.review_status }}</td>
+    <td>{{ match.total_score }}<br><small>{{ match.score_details_json or match.reject_reason or '' }}</small></td>
+    <td>{{ channel.title or '' }}<br>@{{ channel.username or '' }}</td>
+    <td>{{ message.posted_at }}<br>{% if message.url %}<a href="{{ message.url }}">link</a>{% endif %}</td>
+    <td>{{ message.text[:1000] }}</td>
+    <td>
+      <form method="post" action="/review/matches/{{ match.id }}/approve"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Approve</button></form>
+      <form method="post" action="/review/matches/{{ match.id }}/reject"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Reject</button></form>
+      <form method="post" action="/review/matches/{{ match.id }}/pending"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Pending</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

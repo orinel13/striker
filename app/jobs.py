@@ -71,7 +71,8 @@ def run_job(session: Session, job: Job) -> None:
             fetch_firms_for_all_cases(session)
             session.commit()
             _update(session, job, 55, "match-cases")
-            match_cases(session)
+            stats = match_cases(session)
+            job.current_step = f"matched: {stats['matches']} telegram matches, {stats['pending']} pending review"
             session.commit()
             _update(session, job, 75, "render-evidence")
             render_evidence(session)
@@ -82,7 +83,8 @@ def run_job(session: Session, job: Job) -> None:
         elif job.kind == "fetch-firms":
             fetch_firms_for_all_cases(session)
         elif job.kind == "match-cases":
-            match_cases(session)
+            stats = match_cases(session)
+            job.current_step = f"matched: {stats['matches']} telegram matches, {stats['pending']} pending review"
         elif job.kind == "render-evidence":
             render_evidence(session)
         elif job.kind == "export-report":
