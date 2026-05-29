@@ -43,7 +43,7 @@ def require_login(request: Request) -> None:
 def render(request: Request, name: str, context: dict | None = None) -> HTMLResponse:
     ctx = {"request": request, "csrf_token": request.session.get("csrf_token", "")}
     ctx.update(context or {})
-    return templates.TemplateResponse(name, ctx)
+    return templates.TemplateResponse(request=request, name=name, context=ctx)
 
 
 @router.get("/login")

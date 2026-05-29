@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
+from sqlalchemy import func
 
 from app.config import ConfigError, ensure_data_dirs, get_settings, require_api_token, require_web_secrets
 from app.db import SessionLocal, init_db, session_scope
@@ -19,12 +20,13 @@ from app.firms.client import fetch_firms_for_all_cases
 from app.geo.places_loader import load_places_csv
 from app.jobs import create_job, worker_loop
 from app.logging_setup import setup_logging
-from app.matching.case_matcher import match_cases
+from app.matching.case_matcher import localize_message_time, match_cases, score_message_for_case
 from app.matching.evidence import render_evidence
-from app.models import Channel, ChannelCandidate, Export, Job
+from app.models import Case, Channel, ChannelCandidate, Export, Job, Message
 from app.security import hash_password
 from app.telegram.client import TelegramClientFactory
-from app.telegram.collector import collect_loop, collect_once
+from app.telegram.collector import collect_latest_once, collect_loop, collect_once, reindex_message_places
+from app.telegram.normalizer import normalize_text
 
 
 def cmd_init_db(_args) -> None:
@@ -60,6 +62,11 @@ def cmd_telegram_login(_args) -> None:
 def cmd_collect_once(_args) -> None:
     init_db()
     print(asyncio.run(collect_once()))
+
+
+def cmd_collect_latest_once(_args) -> None:
+    init_db()
+    print(asyncio.run(collect_latest_once()))
 
 
 def cmd_collect_loop(_args) -> None:
@@ -136,6 +143,93 @@ def cmd_match_cases(_args) -> None:
     with session_scope() as session:
         count = match_cases(session)
     print(f"Created {count} matches.")
+
+
+def cmd_archive_stats(_args) -> None:
+    init_db()
+    with session_scope() as session:
+        total, min_posted, max_posted = session.query(func.count(Message.id), func.min(Message.posted_at), func.max(Message.posted_at)).one()
+        print(f"total messages: {total}")
+        print(f"min posted_at: {min_posted}")
+        print(f"max posted_at: {max_posted}")
+        print("username | count | min(posted_at) | max(posted_at) | last_message_id | max(tg_message_id)")
+        rows = (
+            session.query(
+                Channel.username,
+                func.count(Message.id),
+                func.min(Message.posted_at),
+                func.max(Message.posted_at),
+                Channel.last_message_id,
+                func.max(Message.tg_message_id),
+            )
+            .outerjoin(Message, Message.channel_id == Channel.id)
+            .group_by(Channel.id)
+            .order_by(Channel.username)
+            .all()
+        )
+        for row in rows:
+            print(" | ".join("" if value is None else str(value) for value in row))
+
+
+def cmd_reset_channel_cursors(args) -> None:
+    init_db()
+    if not args.all and not args.username:
+        raise ConfigError("Use --all or --username")
+    with session_scope() as session:
+        query = session.query(Channel)
+        if args.username:
+            query = query.filter(Channel.username == args.username.lstrip("@").lower())
+        count = 0
+        for channel in query.all():
+            channel.last_message_id = 0
+            channel.last_collected_at = None
+            count += 1
+    print(f"Reset cursors: {count}")
+
+
+def cmd_reindex_message_places(_args) -> None:
+    init_db()
+    with session_scope() as session:
+        count = reindex_message_places(session)
+    print(f"Reindexed messages: {count}")
+
+
+def cmd_debug_match_case(args) -> None:
+    init_db()
+    with session_scope() as session:
+        case = session.get(Case, args.case_id)
+        if not case:
+            raise ConfigError(f"Case not found: {args.case_id}")
+        print(f"case id={case.id} place={case.place_name} date={case.event_date} window={case.time_window_start}..{case.time_window_end}")
+        messages = session.query(Message).order_by(Message.posted_at.desc()).limit(args.limit).all()
+        for message in messages:
+            channel = session.get(Channel, message.channel_id)
+            scored = score_message_for_case(session, case, message)
+            reasons = ",".join(scored["reasons"]) or "accepted_candidate"
+            snippet = (message.text or "").replace("\n", " ")[:160]
+            print(
+                f"message_id={message.id} channel={channel.username if channel else ''}/{channel.title if channel else ''} "
+                f"posted_utc={message.posted_at} posted_local={scored['posted_at_local']} url={message.url or ''} "
+                f"time={scored['time_score']} geo={scored['geo_score']} keyword={scored['keyword_score']} "
+                f"source={scored['source_score']} total={scored['total']} would_priority={scored['priority']} "
+                f"reasons={reasons} text={snippet}"
+            )
+
+
+def cmd_search_archive(args) -> None:
+    init_db()
+    query = normalize_text(" ".join(args.query))
+    with session_scope() as session:
+        messages = session.query(Message).filter(Message.normalized_text.contains(query))
+        if args.date:
+            day = date.fromisoformat(args.date)
+            start = datetime.combine(day, datetime.min.time())
+            end = datetime.combine(day, datetime.max.time())
+            messages = messages.filter(Message.posted_at >= start, Message.posted_at <= end)
+        for message in messages.order_by(Message.posted_at.desc()).limit(args.limit).all():
+            channel = session.get(Channel, message.channel_id)
+            snippet = (message.text or "").replace("\n", " ")[:220]
+            print(f"{message.posted_at} | {channel.username if channel else message.channel_id} | {message.url or ''} | {snippet}")
 
 
 def cmd_render_evidence(_args) -> None:
@@ -249,10 +343,13 @@ def build_parser() -> argparse.ArgumentParser:
         "make-password-hash": (cmd_make_password_hash, []),
         "telegram-login": (cmd_telegram_login, []),
         "collect-once": (cmd_collect_once, []),
+        "collect-latest-once": (cmd_collect_latest_once, []),
         "collect-loop": (cmd_collect_loop, []),
         "worker-loop": (cmd_worker_loop, []),
         "fetch-firms": (cmd_fetch_firms, []),
         "match-cases": (cmd_match_cases, []),
+        "archive-stats": (cmd_archive_stats, []),
+        "reindex-message-places": (cmd_reindex_message_places, []),
         "render-evidence": (cmd_render_evidence, []),
         "run-web": (cmd_run_web, []),
         "cleanup-exports": (cmd_cleanup_exports, []),
@@ -264,6 +361,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--style", choices=["osint", "technical"], default="osint")
     p.add_argument("--include-technical-appendix", action="store_true")
     p.set_defaults(func=cmd_export_report)
+    p = sub.add_parser("reset-channel-cursors")
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--all", action="store_true")
+    group.add_argument("--username")
+    p.set_defaults(func=cmd_reset_channel_cursors)
+    p = sub.add_parser("debug-match-case")
+    p.add_argument("case_id", type=int)
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_debug_match_case)
+    p = sub.add_parser("search-archive")
+    p.add_argument("query", nargs="+")
+    p.add_argument("--date")
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_search_archive)
     p = sub.add_parser("load-places")
     p.add_argument("path", nargs="?", default="data/places_extra.csv")
     p.set_defaults(func=cmd_load_places)

@@ -14,11 +14,37 @@ from app.telegram.normalizer import normalize_text
 
 
 PLACE_ALIASES = {
-    "днепропетровск": ["днепр", "дніпро"],
-    "славянск": ["слов'янськ", "словянськ", "славянск"],
-    "изюм": ["ізюм", "изюм"],
-    "чугуев": ["чугуїв", "чугуев"],
-    "балаклея": ["балаклія", "балаклея"],
+    "краматорск": ["краматорск", "краматорськ", "kramatorsk"],
+    "краматорськ": ["краматорск", "краматорськ", "kramatorsk"],
+    "славянск": ["славянск", "слов'янськ", "словянськ", "slavyansk", "sloviansk", "slovyansk"],
+    "слов'янськ": ["славянск", "слов'янськ", "словянськ", "slavyansk", "sloviansk", "slovyansk"],
+    "дружковка": ["дружковка", "дружківка", "druzhkovka"],
+    "дружківка": ["дружковка", "дружківка", "druzhkovka"],
+    "константиновка": ["константиновка", "костянтинівка", "konstantinovka"],
+    "костянтинівка": ["константиновка", "костянтинівка", "konstantinovka"],
+    "доброполье": ["доброполье", "добропілля", "dobropillya", "dobropilia"],
+    "добропілля": ["доброполье", "добропілля", "dobropillya", "dobropilia"],
+    "прилуки": ["прилуки", "pryluky"],
+    "чернигов": ["чернигов", "чернігів", "chernihiv"],
+    "чернігів": ["чернигов", "чернігів", "chernihiv"],
+    "харьков": ["харьков", "харків", "kharkiv"],
+    "харків": ["харьков", "харків", "kharkiv"],
+    "чугуев": ["чугуев", "чугуїв", "chuguev", "chuhuiv"],
+    "чугуїв": ["чугуев", "чугуїв", "chuguev", "chuhuiv"],
+    "балаклея": ["балаклея", "балаклія", "balakliya"],
+    "балаклія": ["балаклея", "балаклія", "balakliya"],
+    "изюм": ["изюм", "ізюм", "izyum", "izium"],
+    "ізюм": ["изюм", "ізюм", "izyum", "izium"],
+    "днепр": ["днепр", "дніпро", "днепропетровск", "dnipro"],
+    "дніпро": ["днепр", "дніпро", "днепропетровск", "dnipro"],
+    "днепропетровск": ["днепр", "дніпро", "днепропетровск", "dnipro"],
+    "павлоград": ["павлоград", "pavlograd"],
+    "одесса": ["одесса", "одеса", "odesa", "odessa"],
+    "одеса": ["одесса", "одеса", "odesa", "odessa"],
+    "конотоп": ["конотоп", "konotop"],
+    "кропивницкий": ["кировоград", "кропивницкий", "кропивницький", "kropyvnytskyi"],
+    "кропивницький": ["кировоград", "кропивницкий", "кропивницький", "kropyvnytskyi"],
+    "кировоград": ["кировоград", "кропивницкий", "кропивницький", "kropyvnytskyi"],
     "красноармейск": ["покровск", "покровськ"],
 }
 
@@ -46,17 +72,16 @@ def geo_score(session: Session, case: Case, message: Message) -> float:
     place_aliases = _place_aliases(case.place_name)
     if place_aliases and any(alias in message.normalized_text for alias in place_aliases):
         return 0.7
-    if case.lat is None or case.lon is None:
-        channel = session.get(Channel, message.channel_id)
-        channel_text = normalize_text(" ".join([channel.username or "", channel.title or ""])) if channel else ""
-        categories = {category for category, _ in find_keywords(message.text)}
-        if place_aliases and any(alias in channel_text for alias in place_aliases) and (categories & {"impact", "fire", "uav", "missile"}):
-            return 0.45
-        return 0.0
-    places = session.query(MessagePlace).filter(MessagePlace.message_id == message.id).all()
-    for place in places:
-        if place.lat is not None and place.lon is not None and haversine_km(case.lat, case.lon, place.lat, place.lon) <= case.radius_km:
-            return 1.0
+    if case.lat is not None and case.lon is not None:
+        places = session.query(MessagePlace).filter(MessagePlace.message_id == message.id).all()
+        for place in places:
+            if place.lat is not None and place.lon is not None and haversine_km(case.lat, case.lon, place.lat, place.lon) <= case.radius_km:
+                return 1.0
+    channel = session.get(Channel, message.channel_id)
+    channel_text = normalize_text(" ".join([channel.username or "", channel.title or ""])) if channel else ""
+    categories = {category for category, _ in find_keywords(message.text)}
+    if place_aliases and any(alias in channel_text for alias in place_aliases) and (categories & {"impact", "fire", "uav", "missile"}):
+        return 0.45
     return 0.0
 
 
@@ -100,6 +125,36 @@ def _cap_priority_for_indirect_geo(priority: str, g_score: float) -> str:
     return priority
 
 
+def score_message_for_case(session: Session, case: Case, message: Message) -> dict:
+    settings = get_settings()
+    posted_at_local = localize_message_time(message.posted_at, settings.local_timezone)
+    t_score = time_score(case, posted_at_local)
+    g_score = geo_score(session, case, message)
+    k_score = keyword_match_score(message)
+    source_score = 0.1 if message.url else 0.0
+    total = round(t_score * 0.35 + g_score * 0.3 + k_score * 0.25 + source_score, 3)
+    priority = _cap_priority_for_indirect_geo(priority_for(total, t_score), g_score)
+    reasons = []
+    if t_score <= 0:
+        reasons.append("rejected_time")
+    if g_score <= 0:
+        reasons.append("rejected_geo")
+    if k_score <= 0:
+        reasons.append("rejected_keyword")
+    if priority == "NO DATA":
+        reasons.append("rejected_total")
+    return {
+        "posted_at_local": posted_at_local,
+        "time_score": t_score,
+        "geo_score": g_score,
+        "keyword_score": k_score,
+        "source_score": source_score,
+        "total": total,
+        "priority": priority,
+        "reasons": reasons,
+    }
+
+
 def explanation(priority: str, message: Message | None = None) -> str:
     if message:
         return (
@@ -118,15 +173,15 @@ def match_cases(session: Session) -> int:
     for case in session.query(Case).all():
         added = False
         for message in messages:
-            posted_at_local = localize_message_time(message.posted_at, settings.local_timezone)
-            t_score = time_score(case, posted_at_local)
+            scored = score_message_for_case(session, case, message)
+            t_score = scored["time_score"]
             if t_score <= 0:
                 continue
-            g_score = geo_score(session, case, message)
-            k_score = keyword_match_score(message)
-            source_score = 0.1 if message.url else 0.0
-            total = round(t_score * 0.35 + g_score * 0.3 + k_score * 0.25 + source_score, 3)
-            priority = _cap_priority_for_indirect_geo(priority_for(total, t_score), g_score)
+            g_score = scored["geo_score"]
+            k_score = scored["keyword_score"]
+            source_score = scored["source_score"]
+            total = scored["total"]
+            priority = scored["priority"]
             if priority == "NO DATA":
                 continue
             session.add(

@@ -20,7 +20,7 @@ def _db_url() -> str:
     return f"sqlite:///{path}"
 
 
-engine = create_engine(_db_url(), connect_args={"check_same_thread": False}, future=True)
+engine = create_engine(_db_url(), connect_args={"check_same_thread": False, "timeout": 30}, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 
@@ -41,6 +41,10 @@ def init_db() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        connection.execute(text("PRAGMA journal_mode=WAL"))
+        connection.execute(text("PRAGMA synchronous=NORMAL"))
+        connection.execute(text("PRAGMA busy_timeout=30000"))
     _ensure_runtime_columns()
 
 

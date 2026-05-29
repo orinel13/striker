@@ -184,6 +184,30 @@ python -m app.cli cleanup-exports
 
 Do not run aggressive global searches. Archive channels gradually from `data/seed_channels.txt` and approved candidates. Striker handles `FloodWaitError`, sleeps, logs per-channel errors, and continues with other channels.
 
+## Первичный сбор Telegram-архива
+
+`collect-latest-once` собирает последние сообщения активных каналов и выставляет курсор `last_message_id` на максимальный актуальный Telegram message id. После этого `collect-loop` добирает только новые сообщения.
+
+Backfill старой истории должен быть отдельной задачей и не должен мешать свежему архиву. Если раньше был выполнен багованный сбор старейших сообщений, восстанови курсоры и свежую выборку:
+
+```bash
+sudo systemctl stop striker-collector striker-worker
+/opt/striker/.venv/bin/python -m app.cli reset-channel-cursors --all
+/opt/striker/.venv/bin/python -m app.cli collect-latest-once
+/opt/striker/.venv/bin/python -m app.cli archive-stats
+/opt/striker/.venv/bin/python -m app.cli reindex-message-places
+/opt/striker/.venv/bin/python -m app.cli match-cases
+sudo systemctl start striker-worker striker-collector
+```
+
+Полезная диагностика:
+
+```bash
+/opt/striker/.venv/bin/python -m app.cli search-archive Прилуки --date 2026-05-29
+/opt/striker/.venv/bin/python -m app.cli search-archive взрыв --date 2026-05-29
+/opt/striker/.venv/bin/python -m app.cli debug-match-case 1 --limit 50
+```
+
 ## FIRMS Caveat
 
 FIRMS shows thermal anomaly / active fire detection. FIRMS does not prove the cause of a fire. Treat it only as a contextual verification layer alongside Telegram archive data, time, place, and source evidence. If FIRMS is the only nearby evidence, reports mark it with this caveat.
