@@ -30,15 +30,22 @@ class Channel(Base):
 
 class ChannelCandidate(Base):
     __tablename__ = "channel_candidates"
+    __table_args__ = (UniqueConstraint("username"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    username: Mapped[str | None] = mapped_column(String)
+    username: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str | None] = mapped_column(String)
     url: Mapped[str | None] = mapped_column(String)
     source_channel_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("channels.id"))
     first_seen_message_id: Mapped[int | None] = mapped_column(Integer)
+    last_seen_message_id: Mapped[int | None] = mapped_column(Integer)
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
     mentions_count: Mapped[int] = mapped_column(Integer, default=1)
     thematic_score: Mapped[float] = mapped_column(Float, default=0)
     status: Mapped[str] = mapped_column(String, default="pending")
+    sample_texts_json: Mapped[str | None] = mapped_column(Text)
+    source_messages_json: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 

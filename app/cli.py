@@ -25,6 +25,7 @@ from app.matching.case_matcher import candidates_for_case, evidence_window, lega
 from app.matching.evidence import render_evidence
 from app.models import Case, CaseBatch, CaseMatch, Channel, ChannelCandidate, Export, Job, Message
 from app.security import hash_password
+from app.telegram.channel_discovery import approve_channel_candidate, dedupe_channel_candidates, normalize_channel_username, set_channel_candidate_status
 from app.telegram.client import TelegramClientFactory
 from app.telegram.collector import collect_latest_once, collect_loop, collect_once, prune_archive, reindex_message_places
 from app.telegram.normalizer import normalize_text
@@ -221,7 +222,7 @@ def cmd_reset_channel_cursors(args) -> None:
 def cmd_reindex_message_places(_args) -> None:
     init_db()
     with session_scope() as session:
-        count = reindex_message_places(session)
+        count = reindex_message_places(session, days=_args.days, all_messages=_args.all, batch_size=_args.batch_size, progress=True)
     print(f"Reindexed messages: {count}")
 
 
@@ -306,6 +307,8 @@ def cmd_export_report(_args) -> None:
             text_only=_args.text_only and not (_args.with_local_cards or _args.external_screenshots),
             with_local_cards=_args.with_local_cards,
             external_screenshots=_args.external_screenshots,
+            include_case_refs=_args.include_case_refs,
+            include_unmatched_appendix=_args.include_unmatched_appendix,
         )
         print(export.zip_path)
 
@@ -417,24 +420,69 @@ def cmd_run_web(_args) -> None:
 
 def cmd_approve_channel(args) -> None:
     init_db()
-    username = args.username.lower().lstrip("@")
+    username = normalize_channel_username(args.username)
     with session_scope() as session:
-        candidate = session.query(ChannelCandidate).filter(ChannelCandidate.username == username).one_or_none()
-        if candidate:
-            candidate.status = "approved"
-        if not session.query(Channel).filter(Channel.username == username).one_or_none():
-            session.add(Channel(username=username, url=f"https://t.me/{username}", status="active"))
+        approve_channel_candidate(session, username)
     print(f"Approved {username}.")
 
 
 def cmd_reject_channel(args) -> None:
     init_db()
-    username = args.username.lower().lstrip("@")
+    username = normalize_channel_username(args.username)
     with session_scope() as session:
-        candidate = session.query(ChannelCandidate).filter(ChannelCandidate.username == username).one_or_none()
-        if candidate:
-            candidate.status = "rejected"
+        set_channel_candidate_status(session, username, "rejected")
     print(f"Rejected {username}.")
+
+
+def cmd_list_channel_candidates(args) -> None:
+    init_db()
+    with session_scope() as session:
+        query = session.query(ChannelCandidate)
+        if args.status != "all":
+            query = query.filter(ChannelCandidate.status == args.status)
+        for c in query.order_by(ChannelCandidate.thematic_score.desc(), ChannelCandidate.updated_at.desc()).limit(args.limit).all():
+            print(f"{c.username} | {c.status} | mentions={c.mentions_count} | score={c.thematic_score} | {c.title or ''}")
+
+
+def cmd_approve_channel_candidate(args) -> None:
+    init_db()
+    username = normalize_channel_username(args.username)
+    with session_scope() as session:
+        approve_channel_candidate(session, username)
+    print(f"Approved candidate {username}.")
+
+
+def cmd_reject_channel_candidate(args) -> None:
+    init_db()
+    username = normalize_channel_username(args.username)
+    with session_scope() as session:
+        set_channel_candidate_status(session, username, "rejected")
+    print(f"Rejected candidate {username}.")
+
+
+def cmd_archive_channel_candidate(args) -> None:
+    init_db()
+    username = normalize_channel_username(args.username)
+    with session_scope() as session:
+        set_channel_candidate_status(session, username, "archived")
+    print(f"Archived candidate {username}.")
+
+
+def cmd_cleanup_channel_candidates(args) -> None:
+    if not args.yes:
+        raise ConfigError("Use --yes")
+    init_db()
+    cutoff = datetime.utcnow() - timedelta(days=args.older_than_days)
+    with session_scope() as session:
+        deleted = session.query(ChannelCandidate).filter(ChannelCandidate.status == args.status, ChannelCandidate.updated_at < cutoff).delete(synchronize_session=False)
+    print(f"Deleted candidates: {deleted}")
+
+
+def cmd_dedupe_channel_candidates(_args) -> None:
+    init_db()
+    with session_scope() as session:
+        removed = dedupe_channel_candidates(session)
+    print(f"Channel candidates deduplicated. removed={removed}")
 
 
 def cmd_create_job_from_docx(args) -> None:
@@ -531,10 +579,10 @@ def build_parser() -> argparse.ArgumentParser:
         "worker-loop": (cmd_worker_loop, []),
         "fetch-firms": (cmd_fetch_firms, []),
         "archive-stats": (cmd_archive_stats, []),
-        "reindex-message-places": (cmd_reindex_message_places, []),
         "run-web": (cmd_run_web, []),
         "cleanup-exports": (cmd_cleanup_exports, []),
         "list-batches": (cmd_list_batches, []),
+        "dedupe-channel-candidates": (cmd_dedupe_channel_candidates, []),
     }
     for name, (func, _opts) in commands.items():
         p = sub.add_parser(name)
@@ -544,6 +592,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-id", type=int)
     p.add_argument("--all-batches", action="store_true")
     p.set_defaults(func=cmd_match_cases)
+    p = sub.add_parser("reindex-message-places")
+    p.add_argument("--days", type=int, default=get_settings().telegram_archive_days)
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--batch-size", type=int, default=500)
+    p.set_defaults(func=cmd_reindex_message_places)
     p = sub.add_parser("export-report")
     p.add_argument("--style", choices=["osint", "technical"], default="osint")
     p.add_argument("--include-technical-appendix", action="store_true")
@@ -552,6 +605,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--text-only", action="store_true", default=True)
     p.add_argument("--with-local-cards", action="store_true")
     p.add_argument("--external-screenshots", action="store_true")
+    p.add_argument("--include-case-refs", action="store_true")
+    p.add_argument("--include-unmatched-appendix", action="store_true")
     p.set_defaults(func=cmd_export_report)
     p = sub.add_parser("render-evidence")
     p.add_argument("--batch-id", type=int)
@@ -624,6 +679,24 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reject-channel")
     p.add_argument("username")
     p.set_defaults(func=cmd_reject_channel)
+    p = sub.add_parser("list-channel-candidates")
+    p.add_argument("--status", choices=["pending", "approved", "rejected", "archived", "all"], default="pending")
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_list_channel_candidates)
+    p = sub.add_parser("approve-channel-candidate")
+    p.add_argument("username")
+    p.set_defaults(func=cmd_approve_channel_candidate)
+    p = sub.add_parser("reject-channel-candidate")
+    p.add_argument("username")
+    p.set_defaults(func=cmd_reject_channel_candidate)
+    p = sub.add_parser("archive-channel-candidate")
+    p.add_argument("username")
+    p.set_defaults(func=cmd_archive_channel_candidate)
+    p = sub.add_parser("cleanup-channel-candidates")
+    p.add_argument("--status", choices=["rejected", "archived"], required=True)
+    p.add_argument("--older-than-days", type=int, required=True)
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_cleanup_channel_candidates)
     p = sub.add_parser("create-job-from-docx")
     p.add_argument("path")
     _add_docx_date_args(p)

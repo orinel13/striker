@@ -31,4 +31,5 @@ data/tmp/*
 !data/tmp/.gitkeep
 
 *.log
-
+*.zip
+*.docx

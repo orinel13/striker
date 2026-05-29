@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.firms.matcher import FIRMS_CAVEAT
 from app.matching.case_matcher import localize_message_time
-from app.models import Case, CaseMatch, Channel, EvidenceFile, Export, Message
+from app.models import Case, CaseBatch, CaseMatch, Channel, EvidenceFile, Export, Message
 from app.telegram.screenshots import render_evidence_card_png, screenshot_message
 
 
@@ -196,6 +196,8 @@ def build_osint_docx_report(
     text_only: bool = True,
     with_local_cards: bool = False,
     external_screenshots: bool = False,
+    include_case_refs: bool = False,
+    include_unmatched_appendix: bool = False,
     progress=None,
 ) -> list[PublicationItem]:
     doc = Document()
@@ -248,9 +250,11 @@ def build_osint_docx_report(
         if item.text:
             doc.add_paragraph("Текст публикации:").runs[0].bold = True
             doc.add_paragraph(item.text)
-        doc.add_paragraph(f"Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}")
+        if include_case_refs:
+            doc.add_paragraph(f"Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}")
         doc.add_paragraph("")
-    _add_no_publications_appendix(doc, _unmatched_cases(session, include_pending=include_pending, batch_id=batch_id))
+    if include_unmatched_appendix:
+        _add_no_publications_appendix(doc, _unmatched_cases(session, include_pending=include_pending, batch_id=batch_id))
     doc.save(out_path)
     return items
 
@@ -263,6 +267,8 @@ def build_osint_html_report(
     text_only: bool = True,
     with_local_cards: bool = False,
     external_screenshots: bool = False,
+    include_case_refs: bool = False,
+    include_unmatched_appendix: bool = False,
     progress=None,
 ) -> list[PublicationItem]:
     items = build_publication_items(session, include_pending=include_pending, batch_id=batch_id)
@@ -298,9 +304,11 @@ def build_osint_html_report(
             parts.append(f"<img src='{html.escape(Path(screenshot_path).as_posix())}' alt='publication evidence'>")
         if item.text:
             parts.append(f"<p><strong>Текст публикации:</strong></p><p>{html.escape(item.text).replace(chr(10), '<br>')}</p>")
-        parts.append(f"<p>Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}</p></section>")
-    unmatched = _unmatched_cases(session, include_pending=include_pending, batch_id=batch_id)
-    if unmatched:
+        if include_case_refs:
+            parts.append(f"<p>Относится к кейсам: №{', №'.join(str(case_id) for case_id in item.case_ids)}</p>")
+        parts.append("</section>")
+    unmatched = _unmatched_cases(session, include_pending=include_pending, batch_id=batch_id) if include_unmatched_appendix else []
+    if include_unmatched_appendix and unmatched:
         parts.append("<h2>Кейсы без найденных публикаций</h2><ul>")
         for case in unmatched:
             parts.append(f"<li>№{case.id}: {html.escape(_case_place(case))} — {html.escape(case.raw_text[:300])}</li>")
@@ -310,12 +318,15 @@ def build_osint_html_report(
     return items
 
 
-def build_technical_docx_report(session: Session, out_path: Path) -> None:
+def build_technical_docx_report(session: Session, out_path: Path, batch_id: int | None = None) -> None:
     doc = Document()
     doc.add_heading("Striker technical report", 0)
     doc.add_paragraph("Technical diagnostics for cases, coordinates, FIRMS context and matching scores.")
     doc.add_paragraph(FIRMS_CAVEAT)
-    cases = session.query(Case).order_by(Case.id).all()
+    case_query = session.query(Case)
+    if batch_id is not None:
+        case_query = case_query.filter(Case.batch_id == batch_id)
+    cases = case_query.order_by(Case.id).all()
     table = doc.add_table(rows=1, cols=7)
     for idx, title in enumerate(["Case", "Date", "Oblast", "Place/reference", "WGS84", "Coord source", "Real matches"]):
         table.rows[0].cells[idx].text = title
@@ -371,14 +382,17 @@ def build_technical_docx_report(session: Session, out_path: Path) -> None:
     doc.save(out_path)
 
 
-def build_technical_html_report(session: Session, out_path: Path) -> None:
+def build_technical_html_report(session: Session, out_path: Path, batch_id: int | None = None) -> None:
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'><title>Technical report</title>",
         "<style>body{font-family:Arial,sans-serif;margin:32px;line-height:1.45} table{border-collapse:collapse;width:100%;margin:12px 0} td,th{border:1px solid #ccd2da;padding:6px;vertical-align:top}</style>",
         "</head><body><h1>Striker technical report</h1>",
         f"<p>{html.escape(FIRMS_CAVEAT)}</p>",
     ]
-    for case in session.query(Case).order_by(Case.id).all():
+    case_query = session.query(Case)
+    if batch_id is not None:
+        case_query = case_query.filter(Case.batch_id == batch_id)
+    for case in case_query.order_by(Case.id).all():
         parts.append(f"<h2>Case {case.id}</h2><p>{html.escape(case.raw_text)}</p>")
         parts.append("<table><tr><th>Type</th><th>Priority</th><th>Total</th><th>Explanation</th></tr>")
         for match in _all_case_matches(session, case.id):
@@ -423,12 +437,17 @@ def export_report(
     text_only: bool = True,
     with_local_cards: bool = False,
     external_screenshots: bool | None = None,
+    include_case_refs: bool = False,
+    include_unmatched_appendix: bool = False,
     progress=print,
 ) -> Export:
     external_screenshots = get_settings().export_external_telegram_screenshots if external_screenshots is None else external_screenshots
     items = build_publication_items(session, include_pending=include_pending, batch_id=batch_id)
     if style == "osint" and not items:
         raise RuntimeError("No approved publications for report")
+    if source_docx is None and batch_id is not None:
+        batch = session.get(CaseBatch, batch_id)
+        source_docx = batch.original_path if batch else None
     export_dir = _export_dir()
     docx_path = export_dir / "report.docx"
     html_path = export_dir / "report.html"
@@ -436,8 +455,8 @@ def export_report(
     if style == "technical":
         if progress:
             progress("saving technical docx")
-        build_technical_docx_report(session, docx_path)
-        build_technical_html_report(session, html_path)
+        build_technical_docx_report(session, docx_path, batch_id=batch_id)
+        build_technical_html_report(session, html_path, batch_id=batch_id)
     else:
         if progress:
             progress(f"report items count: {len(items)}")
@@ -450,6 +469,8 @@ def export_report(
             text_only=text_only,
             with_local_cards=with_local_cards,
             external_screenshots=external_screenshots,
+            include_case_refs=include_case_refs,
+            include_unmatched_appendix=include_unmatched_appendix,
             progress=progress,
         )
         if not text_only:
@@ -464,12 +485,14 @@ def export_report(
             text_only=text_only,
             with_local_cards=with_local_cards,
             external_screenshots=external_screenshots,
+            include_case_refs=include_case_refs,
+            include_unmatched_appendix=include_unmatched_appendix,
         )
         if not text_only:
             used_evidence_paths.extend([p for item in html_items for p in [item.screenshot_path, item.evidence_card_path] if p])
         if include_technical_appendix:
-            build_technical_docx_report(session, export_dir / "technical_report.docx")
-            build_technical_html_report(session, export_dir / "technical_report.html")
+            build_technical_docx_report(session, export_dir / "technical_report.docx", batch_id=batch_id)
+            build_technical_html_report(session, export_dir / "technical_report.html", batch_id=batch_id)
     if progress:
         progress("building zip")
     zip_path = build_zip(session, export_dir, source_docx, used_evidence_paths=sorted(set(used_evidence_paths)), batch_id=batch_id)

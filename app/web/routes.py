@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from app.security import (
     validate_docx_upload,
     verify_password,
 )
+from app.telegram.channel_discovery import approve_channel_candidate, normalize_channel_username, set_channel_candidate_status
 
 
 router = APIRouter()
@@ -193,12 +195,66 @@ def channels(request: Request, session: Session = Depends(db_session)):
 
 
 @router.get("/channel-candidates")
-def channel_candidates(request: Request, session: Session = Depends(db_session)):
+def channel_candidates(
+    request: Request,
+    status: str = "pending",
+    q: str | None = None,
+    min_score: float | None = None,
+    source_channel: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    session: Session = Depends(db_session),
+):
     require_login(request)
+    allowed_statuses = {"pending", "approved", "rejected", "archived", "all"}
+    status = status if status in allowed_statuses else "pending"
+    counts = dict(session.query(ChannelCandidate.status, func.count(ChannelCandidate.id)).group_by(ChannelCandidate.status).all())
+    query = session.query(ChannelCandidate)
+    if status != "all":
+        query = query.filter(ChannelCandidate.status == status)
+    if q:
+        like = f"%{q.lower()}%"
+        query = query.filter(or_(ChannelCandidate.username.like(like), ChannelCandidate.title.like(like)))
+    if min_score is not None:
+        query = query.filter(ChannelCandidate.thematic_score >= min_score)
+    if source_channel:
+        like = f"%{source_channel.lower()}%"
+        source_ids = [row[0] for row in session.query(Channel.id).filter(or_(Channel.username.like(like), Channel.title.like(like))).all()]
+        query = query.filter(ChannelCandidate.source_channel_id.in_(source_ids or [-1]))
+    total_filtered = query.count()
+    if status == "pending":
+        query = query.order_by(ChannelCandidate.thematic_score.desc(), ChannelCandidate.mentions_count.desc(), ChannelCandidate.updated_at.desc())
+    else:
+        query = query.order_by(ChannelCandidate.updated_at.desc())
+    candidates = query.offset(offset).limit(min(limit, 500)).all()
+    source_channels = {
+        channel.id: channel
+        for channel in session.query(Channel).filter(Channel.id.in_([c.source_channel_id for c in candidates if c.source_channel_id])).all()
+    }
+    samples = {}
+    for candidate in candidates:
+        try:
+            samples[candidate.id] = json.loads(candidate.source_messages_json or "[]")
+        except json.JSONDecodeError:
+            samples[candidate.id] = []
     return render(
         request,
         "channel_candidates.html",
-        {"candidates": session.query(ChannelCandidate).order_by(ChannelCandidate.updated_at.desc()).all()},
+        {
+            "candidates": candidates,
+            "counts": {
+                "pending": counts.get("pending", 0),
+                "approved": counts.get("approved", 0),
+                "rejected": counts.get("rejected", 0),
+                "archived": counts.get("archived", 0),
+                "all": sum(counts.values()),
+            },
+            "filters": {"status": status, "q": q or "", "min_score": "" if min_score is None else min_score, "source_channel": source_channel or "", "limit": limit, "offset": offset},
+            "total_filtered": total_filtered,
+            "next_offset": offset + limit if offset + limit < total_filtered else None,
+            "source_channels": source_channels,
+            "samples": samples,
+        },
     )
 
 
@@ -208,10 +264,8 @@ def approve_candidate(request: Request, candidate_id: int, csrf_token: str = For
     ensure_csrf(request, csrf_token)
     candidate = session.get(ChannelCandidate, candidate_id)
     if candidate:
-        candidate.status = "approved"
-        if candidate.username and not session.query(Channel).filter(Channel.username == candidate.username).one_or_none():
-            session.add(Channel(username=candidate.username, title=candidate.title, url=candidate.url, status="active"))
-    return RedirectResponse("/channel-candidates", status_code=303)
+        approve_channel_candidate(session, candidate.username)
+    return _candidate_response(request, candidate)
 
 
 @router.post("/channel-candidates/{candidate_id}/reject")
@@ -221,6 +275,36 @@ def reject_candidate(request: Request, candidate_id: int, csrf_token: str = Form
     candidate = session.get(ChannelCandidate, candidate_id)
     if candidate:
         candidate.status = "rejected"
+    return _candidate_response(request, candidate)
+
+
+@router.post("/channel-candidates/{candidate_id}/archive")
+def archive_candidate(request: Request, candidate_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    candidate = session.get(ChannelCandidate, candidate_id)
+    if candidate:
+        candidate.status = "archived"
+    return _candidate_response(request, candidate)
+
+
+@router.post("/channel-candidates/{candidate_id}/pending")
+def pending_candidate(request: Request, candidate_id: int, csrf_token: str = Form(...), session: Session = Depends(db_session)):
+    require_login(request)
+    ensure_csrf(request, csrf_token)
+    candidate = session.get(ChannelCandidate, candidate_id)
+    if candidate:
+        candidate.status = "pending"
+    return _candidate_response(request, candidate)
+
+
+def _candidate_response(request: Request, candidate: ChannelCandidate | None):
+    accept = request.headers.get("accept", "")
+    requested = request.headers.get("x-requested-with", "")
+    if requested == "fetch" or "application/json" in accept:
+        if not candidate:
+            raise HTTPException(404)
+        return JSONResponse({"ok": True, "candidate_id": candidate.id, "status": candidate.status})
     return RedirectResponse("/channel-candidates", status_code=303)
 
 
@@ -445,7 +529,10 @@ def queue_export(request: Request, csrf_token: str = Form(...), batch_id: int | 
     ensure_csrf(request, csrf_token)
     batch_id = current_batch_id(session, batch_id)
     if approved_publications_count(session, batch_id) <= 0:
-        return render(request, "exports.html", {"exports": session.query(Export).order_by(Export.created_at.desc()).all(), "error": "No approved publications for report", "batch_id": batch_id, "approved_count": 0})
+        query = session.query(Export)
+        if batch_id:
+            query = query.filter(Export.batch_id == batch_id)
+        return render(request, "exports.html", {"exports": query.order_by(Export.created_at.desc()).all(), "error": "No approved publications for report", "batch_id": batch_id, "approved_count": 0})
     create_job(session, "export-report", params={"text_only": True}, batch_id=batch_id)
     return RedirectResponse("/jobs", status_code=303)
 
@@ -566,8 +653,12 @@ def api_job(job_id: int, session: Session = Depends(db_session)):
 
 
 @router.get("/api/exports/latest", dependencies=[Depends(require_api_auth)])
-def api_latest_export(session: Session = Depends(db_session)):
-    export = session.query(Export).filter(Export.zip_path.isnot(None)).order_by(Export.created_at.desc()).first()
+def api_latest_export(batch_id: int | None = None, session: Session = Depends(db_session)):
+    selected_batch_id = current_batch_id(session, batch_id)
+    query = session.query(Export).filter(Export.zip_path.isnot(None))
+    if selected_batch_id:
+        query = query.filter(Export.batch_id == selected_batch_id)
+    export = query.order_by(Export.created_at.desc()).first()
     if not export or not export.zip_path or not Path(export.zip_path).exists():
         raise HTTPException(404)
     return FileResponse(export.zip_path, filename="evidence.zip")

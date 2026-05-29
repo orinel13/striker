@@ -1,13 +1,115 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Channel candidates</h1>
-<table><tr><th>ID</th><th>Username</th><th>Mentions</th><th>Score</th><th>Status</th><th>Action</th></tr>
-{% for c in candidates %}
-<tr><td>{{ c.id }}</td><td>{{ c.username }}</td><td>{{ c.mentions_count }}</td><td>{{ c.thematic_score }}</td><td>{{ c.status }}</td><td>
-<form method="post" action="/channel-candidates/{{ c.id }}/approve" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Approve</button></form>
-<form method="post" action="/channel-candidates/{{ c.id }}/reject" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Reject</button></form>
-</td></tr>
-{% endfor %}
-</table>
-{% endblock %}
+<div class="review-top">
+  <h1>Channel candidates</h1>
+  <nav class="review-tabs">
+    {% for s,label in [('pending','Pending'),('approved','Approved'),('rejected','Rejected'),('archived','Archived'),('all','All')] %}
+    <a class="tab {% if filters.status == s %}active{% endif %}" href="/channel-candidates?status={{ s }}" data-status="{{ s }}">{{ label }} (<span data-count="{{ s }}">{{ counts[s] }}</span>)</a>
+    {% endfor %}
+  </nav>
+  <form class="review-filter" method="get" action="/channel-candidates">
+    <select name="status">{% for s in ['pending','approved','rejected','archived','all'] %}<option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+    <input type="text" name="q" placeholder="username/title" value="{{ filters.q }}">
+    <input type="number" step="0.01" name="min_score" placeholder="min score" value="{{ filters.min_score }}">
+    <input type="text" name="source_channel" placeholder="source channel" value="{{ filters.source_channel }}">
+    <input type="hidden" name="limit" value="{{ filters.limit }}">
+    <button>Apply</button>
+  </form>
+  <div class="review-filter">
+    <button class="bulk-candidate" data-status="approved">Approve all visible</button>
+    <button class="bulk-candidate reject" data-status="rejected">Reject all visible</button>
+    <button class="bulk-candidate secondary" data-status="archived">Archive all visible</button>
+  </div>
+</div>
 
+<p class="muted">Showing {{ total_filtered }} filtered candidates, max {{ filters.limit }} on this page.</p>
+
+<div id="candidateList">
+{% for c in candidates %}
+  {% set source = source_channels.get(c.source_channel_id) %}
+  <article class="review-card status-{{ c.status }}" data-candidate-card data-candidate-id="{{ c.id }}" data-status="{{ c.status }}">
+    <div class="card-head">
+      <div>
+        <strong>@{{ c.username }}</strong>{% if c.title %} — {{ c.title }}{% endif %}
+        <span class="badge status">{{ c.status }}</span>
+        <span class="score">score {{ "%.3f"|format(c.thematic_score or 0) }}</span>
+      </div>
+      <div class="card-actions">
+        <button data-candidate-action="approved">Approve</button>
+        <button data-candidate-action="rejected" class="reject">Reject</button>
+        <button data-candidate-action="archived" class="secondary">Archive</button>
+        <button data-candidate-action="pending" class="secondary">Pending</button>
+        <a class="button" target="_blank" href="https://t.me/{{ c.username }}">Open Telegram</a>
+      </div>
+    </div>
+    <div class="meta">
+      mentions: {{ c.mentions_count }} |
+      source: {% if source %}@{{ source.username or source.title }}{% else %}{{ c.source_channel_id or '' }}{% endif %}<br>
+      first seen: {{ c.first_seen_at or '' }} | last seen: {{ c.last_seen_at or '' }}<br>
+      link: <a target="_blank" href="https://t.me/{{ c.username }}">https://t.me/{{ c.username }}</a>
+    </div>
+    <details open>
+      <summary>Source samples</summary>
+      {% for sample in samples.get(c.id, []) %}
+      <div class="message-text">
+        <div class="meta">{{ sample.posted_at or '' }} | {{ sample.source_channel or '' }} {% if sample.url %}| <a href="{{ sample.url }}" target="_blank">message</a>{% endif %}</div>
+        {{ sample.snippet or '' }}
+      </div>
+      {% else %}
+      <p class="muted">No samples saved.</p>
+      {% endfor %}
+    </details>
+  </article>
+{% endfor %}
+</div>
+
+{% if next_offset is not none %}
+<p><a class="button" href="/channel-candidates?status={{ filters.status }}&q={{ filters.q }}&min_score={{ filters.min_score }}&source_channel={{ filters.source_channel }}&limit={{ filters.limit }}&offset={{ next_offset }}">Load more</a></p>
+{% endif %}
+
+<script>
+const csrfToken = "{{ csrf_token }}";
+const currentStatus = "{{ filters.status }}";
+
+function bumpCandidateCount(status, delta) {
+  const el = document.querySelector(`[data-count="${status}"]`);
+  if (!el) return;
+  el.textContent = Math.max(0, parseInt(el.textContent || "0", 10) + delta);
+}
+
+async function setCandidateStatus(card, status) {
+  const candidateId = card.dataset.candidateId;
+  const action = status === "approved" ? "approve" : status === "rejected" ? "reject" : status === "archived" ? "archive" : "pending";
+  const form = new FormData();
+  form.append("csrf_token", csrfToken);
+  const response = await fetch(`/channel-candidates/${candidateId}/${action}`, {
+    method: "POST",
+    headers: {"X-Requested-With": "fetch", "Accept": "application/json"},
+    body: form
+  });
+  if (!response.ok) return;
+  const data = await response.json();
+  const oldStatus = card.dataset.status;
+  card.dataset.status = data.status;
+  const badge = card.querySelector(".badge.status");
+  if (badge) badge.textContent = data.status;
+  bumpCandidateCount(oldStatus, -1);
+  bumpCandidateCount(data.status, 1);
+  if (currentStatus !== "all" && currentStatus !== data.status) card.remove();
+}
+
+document.querySelectorAll("[data-candidate-action]").forEach(button => {
+  button.addEventListener("click", () => setCandidateStatus(button.closest("[data-candidate-card]"), button.dataset.candidateAction));
+});
+
+document.querySelectorAll(".bulk-candidate").forEach(button => {
+  button.addEventListener("click", async () => {
+    const status = button.dataset.status;
+    if (!confirm(`${status} all visible candidates?`)) return;
+    for (const card of Array.from(document.querySelectorAll("[data-candidate-card]"))) {
+      await setCandidateStatus(card, status);
+    }
+  });
+});
+</script>
+{% endblock %}

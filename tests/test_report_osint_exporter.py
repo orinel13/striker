@@ -71,7 +71,7 @@ def test_osint_docx_report_human_structure(session, tmp_path, monkeypatch):
     assert "Field Value" not in text
     assert "NO DATA" not in text
     assert "https://t.me/sloviansk/1" in text
-    assert "Дружковка" in text
+    assert "Дружковка" not in text
     assert "Публикация №4" not in text
 
 

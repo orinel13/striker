@@ -184,23 +184,36 @@ def _index_message_places(session: Session, message: Message, gazetteer: Gazette
         )
 
 
-def reindex_message_places(session: Session) -> int:
+def reindex_message_places(session: Session, days: int | None = None, all_messages: bool = False, batch_size: int = 500, progress: bool = False) -> int:
     gazetteer = Gazetteer(session)
+    query = session.query(Message).order_by(Message.id)
+    if not all_messages:
+        cutoff = datetime.utcnow() - timedelta(days=days if days is not None else get_settings().telegram_archive_days)
+        query = query.filter(Message.posted_at >= cutoff)
     count = 0
-    for message in session.query(Message).all():
-        session.query(MessageKeyword).filter(MessageKeyword.message_id == message.id).delete()
-        for category, keyword in find_keywords(message.normalized_text):
-            session.add(MessageKeyword(message_id=message.id, category=category, keyword=keyword))
-        coords = extract_coordinates(message.text)
-        place_match = gazetteer.find(message.text)
-        _index_message_places(session, message, gazetteer, coords=coords, place_match=place_match)
-        message.relevance_score = score_message_relevance(
-            message.text,
-            has_place=bool(coords or place_match),
-            has_time=bool(extract_time(message.text)),
-            has_media=message.has_media,
-        )
-        count += 1
+    offset = 0
+    while True:
+        messages = query.offset(offset).limit(batch_size).all()
+        if not messages:
+            break
+        for message in messages:
+            session.query(MessageKeyword).filter(MessageKeyword.message_id == message.id).delete()
+            for category, keyword in find_keywords(message.normalized_text):
+                session.add(MessageKeyword(message_id=message.id, category=category, keyword=keyword))
+            coords = extract_coordinates(message.text)
+            place_match = gazetteer.find(message.text)
+            _index_message_places(session, message, gazetteer, coords=coords, place_match=place_match)
+            message.relevance_score = score_message_relevance(
+                message.text,
+                has_place=bool(coords or place_match),
+                has_time=bool(extract_time(message.text)),
+                has_media=message.has_media,
+            )
+            count += 1
+        session.commit()
+        if progress:
+            print(f"reindexed messages: {count}")
+        offset += batch_size
     return count
 
 

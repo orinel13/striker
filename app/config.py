@@ -51,6 +51,9 @@ class Settings:
     archive_previous_batches_on_upload: bool
     export_dedup_global: bool
     export_external_telegram_screenshots: bool
+    channel_candidate_min_score: float
+    channel_candidate_max_samples: int
+    channel_candidate_ignore_bots: bool
     firms_map_key: str
     firms_default_radius_km: float
     local_timezone: str
@@ -87,6 +90,9 @@ def get_settings() -> Settings:
         archive_previous_batches_on_upload=os.getenv("ARCHIVE_PREVIOUS_BATCHES_ON_UPLOAD", "false").lower() in {"1", "true", "yes"},
         export_dedup_global=os.getenv("EXPORT_DEDUP_GLOBAL", "true").lower() in {"1", "true", "yes"},
         export_external_telegram_screenshots=os.getenv("EXPORT_EXTERNAL_TELEGRAM_SCREENSHOTS", "false").lower() in {"1", "true", "yes"},
+        channel_candidate_min_score=_float("CHANNEL_CANDIDATE_MIN_SCORE", 0.35),
+        channel_candidate_max_samples=_int("CHANNEL_CANDIDATE_MAX_SAMPLES", 5),
+        channel_candidate_ignore_bots=os.getenv("CHANNEL_CANDIDATE_IGNORE_BOTS", "true").lower() in {"1", "true", "yes"},
         firms_map_key=os.getenv("FIRMS_MAP_KEY", ""),
         firms_default_radius_km=_float("FIRMS_DEFAULT_RADIUS_KM", 15),
         local_timezone=os.getenv("LOCAL_TIMEZONE", "Europe/Kyiv"),
