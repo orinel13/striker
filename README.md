@@ -109,6 +109,31 @@ PowerShell workflow:
 ./scripts/windows/open-striker-ui.ps1 -ServerUrl "https://domain-or-ip"
 ```
 
+## Импорт табличных актов ударов
+
+Для актов в таблицах `.docx` сначала проверь распознавание строк без записи в базу:
+
+```bash
+python -m app.cli inspect-docx data/inbox/strikes29.docx --document-date 2026-05-20
+```
+
+Затем импортируй, сопоставь и собери отчёт:
+
+```bash
+python -m app.cli import-docx data/inbox/strikes29.docx --document-date 2026-05-20
+python -m app.cli match-cases
+python -m app.cli export-report
+```
+
+Если документ содержит дату без года, например `20.05`, укажи год:
+
+```bash
+python -m app.cli inspect-docx data/inbox/strikes29.docx --default-year 2026
+python -m app.cli import-docx data/inbox/strikes29.docx --default-year 2026
+```
+
+Если документ вообще без даты, укажи дату суток события через `--document-date`. Координаты вида `5415616 7395885` автоматически конвертируются из СК-42/Гаусс-Крюгер в WGS84; исходные northing/easting и источник координат сохраняются в базе и отчёте.
+
 ## CLI
 
 ```bash
@@ -119,7 +144,8 @@ python -m app.cli telegram-login
 python -m app.cli collect-once
 python -m app.cli collect-loop
 python -m app.cli worker-loop
-python -m app.cli import-docx data/inbox/strikes.docx
+python -m app.cli inspect-docx data/inbox/strikes.docx --document-date 2026-05-20
+python -m app.cli import-docx data/inbox/strikes.docx --document-date 2026-05-20
 python -m app.cli fetch-firms
 python -m app.cli match-cases
 python -m app.cli render-evidence

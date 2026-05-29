@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -41,4 +41,29 @@ def init_db() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _ensure_runtime_columns()
 
+
+def _ensure_runtime_columns() -> None:
+    required = {
+        "cases": {
+            "oblast": "VARCHAR",
+            "reference_text": "TEXT",
+            "raw_grid_northing": "VARCHAR",
+            "raw_grid_easting": "VARCHAR",
+            "coordinate_source": "VARCHAR",
+            "parser_warnings": "TEXT",
+        },
+        "jobs": {
+            "params_json": "TEXT",
+        },
+    }
+    inspector = inspect(engine)
+    with engine.begin() as connection:
+        for table_name, columns in required.items():
+            if table_name not in inspector.get_table_names():
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in columns.items():
+                if column_name not in existing:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))

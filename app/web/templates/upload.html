@@ -4,9 +4,9 @@
 <div class="panel">
   <form method="post" action="/upload" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <p><label>Дата документа/суток события<br><input type="date" name="document_date"></label></p>
     <p><input type="file" name="file" accept=".docx" required></p>
     <button>Upload and process</button>
   </form>
 </div>
 {% endblock %}
-

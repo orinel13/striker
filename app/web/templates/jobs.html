@@ -1,10 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Jobs</h1>
-<table><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Step</th><th>Error</th><th>Output</th></tr>
+<table><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Step</th><th>Params</th><th>Error</th><th>Output</th></tr>
 {% for job in jobs %}
-<tr><td>{{ job.id }}</td><td>{{ job.kind }}</td><td>{{ job.status }}</td><td>{{ job.progress }}%</td><td>{{ job.current_step or '' }}</td><td>{{ job.error or '' }}</td><td>{{ job.output_path or '' }}</td></tr>
+<tr><td>{{ job.id }}</td><td>{{ job.kind }}</td><td>{{ job.status }}</td><td>{{ job.progress }}%</td><td>{{ job.current_step or '' }}</td><td>{{ job.params_json or '' }}</td><td>{{ job.error or '' }}</td><td>{{ job.output_path or '' }}</td></tr>
 {% endfor %}
 </table>
 {% endblock %}
-

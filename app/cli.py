@@ -5,7 +5,7 @@ import asyncio
 import getpass
 import shutil
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
@@ -14,6 +14,7 @@ from app.config import ConfigError, ensure_data_dirs, get_settings, require_api_
 from app.db import SessionLocal, init_db, session_scope
 from app.documents.docx_importer import import_docx
 from app.documents.report_exporter import export_report
+from app.documents.strike_table_parser import parse_docx_strike_rows
 from app.firms.client import fetch_firms_for_all_cases
 from app.geo.places_loader import load_places_csv
 from app.jobs import create_job, worker_loop
@@ -73,9 +74,37 @@ def cmd_worker_loop(_args) -> None:
 
 def cmd_import_docx(args) -> None:
     init_db()
+    document_date = date.fromisoformat(args.document_date) if args.document_date else None
     with session_scope() as session:
-        cases = import_docx(session, args.path)
+        cases = import_docx(session, args.path, document_date=document_date, default_year=args.default_year)
     print(f"Imported {len(cases)} cases.")
+
+
+def cmd_inspect_docx(args) -> None:
+    document_date = date.fromisoformat(args.document_date) if args.document_date else None
+    rows = parse_docx_strike_rows(args.path, document_date=document_date, default_year=args.default_year)
+    print("row_index | date | time/window | oblast | place | lat | lon | warnings")
+    for row in rows:
+        if row.time_window_start and row.time_window_end:
+            window = f"{row.time_window_start.isoformat()}..{row.time_window_end.isoformat()}"
+        else:
+            window = row.event_time_local or (
+                f"{row.time_range_start or ''}-{row.time_range_end or ''}" if row.time_range_start or row.time_range_end else ""
+            )
+        print(
+            " | ".join(
+                [
+                    str(row.row_index),
+                    row.event_date.isoformat() if row.event_date else "",
+                    window,
+                    row.oblast or "",
+                    row.place_name_raw or row.reference_text or "",
+                    f"{row.lat:.5f}" if row.lat is not None else "",
+                    f"{row.lon:.5f}" if row.lon is not None else "",
+                    "; ".join(row.parser_warnings),
+                ]
+            )
+        )
 
 
 def cmd_fetch_firms(_args) -> None:
@@ -137,8 +166,13 @@ def cmd_reject_channel(args) -> None:
 
 def cmd_create_job_from_docx(args) -> None:
     init_db()
+    params = {}
+    if args.document_date:
+        params["document_date"] = args.document_date
+    if args.default_year:
+        params["default_year"] = args.default_year
     with session_scope() as session:
-        job = create_job(session, "process-docx", args.path)
+        job = create_job(session, "process-docx", args.path, params=params or None)
         print(job.id)
 
 
@@ -186,7 +220,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_load_places)
     p = sub.add_parser("import-docx")
     p.add_argument("path")
+    p.add_argument("--document-date", help="Document/event date in YYYY-MM-DD format")
+    p.add_argument("--default-year", type=int, help="Year for short dates like 20.05")
     p.set_defaults(func=cmd_import_docx)
+    p = sub.add_parser("inspect-docx")
+    p.add_argument("path")
+    p.add_argument("--document-date", help="Document/event date in YYYY-MM-DD format")
+    p.add_argument("--default-year", type=int, help="Year for short dates like 20.05")
+    p.set_defaults(func=cmd_inspect_docx)
     p = sub.add_parser("approve-channel")
     p.add_argument("username")
     p.set_defaults(func=cmd_approve_channel)
@@ -195,6 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_reject_channel)
     p = sub.add_parser("create-job-from-docx")
     p.add_argument("path")
+    p.add_argument("--document-date", help="Document/event date in YYYY-MM-DD format")
+    p.add_argument("--default-year", type=int, help="Year for short dates like 20.05")
     p.set_defaults(func=cmd_create_job_from_docx)
     return parser
 

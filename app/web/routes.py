@@ -96,6 +96,7 @@ async def upload_docx(
     request: Request,
     file: UploadFile = File(...),
     csrf_token: str = Form(...),
+    document_date: str = Form(default=""),
     session: Session = Depends(db_session),
 ):
     require_login(request)
@@ -106,7 +107,8 @@ async def upload_docx(
     path = Path("data/inbox") / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-    job = create_job(session, "process-docx", str(path))
+    params = {"document_date": document_date} if document_date else None
+    job = create_job(session, "process-docx", str(path), params=params)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
 
@@ -243,14 +245,19 @@ def queue_export(request: Request, csrf_token: str = Form(...), session: Session
 
 
 @router.post("/api/documents/upload", dependencies=[Depends(require_api_auth)])
-async def api_upload(file: UploadFile = File(...), session: Session = Depends(db_session)):
+async def api_upload(
+    file: UploadFile = File(...),
+    document_date: str = Form(default=""),
+    session: Session = Depends(db_session),
+):
     settings = get_settings()
     data = await validate_docx_upload(file, settings.upload_max_mb)
     filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{sanitize_filename(file.filename or 'upload.docx')}"
     path = Path("data/inbox") / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-    job = create_job(session, "process-docx", str(path))
+    params = {"document_date": document_date} if document_date else None
+    job = create_job(session, "process-docx", str(path), params=params)
     return {"ok": True, "job_id": job.id, "filename": filename}
 
 
@@ -265,6 +272,7 @@ def api_job(job_id: int, session: Session = Depends(db_session)):
         "status": job.status,
         "progress": job.progress,
         "current_step": job.current_step,
+        "params": job.params_json,
         "error": job.error,
         "output_path": job.output_path,
     }

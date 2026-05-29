@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import shutil
 import zipfile
@@ -33,21 +34,40 @@ def build_docx_report(session: Session, out_path: Path) -> None:
     doc.add_heading("Striker evidence report", 0)
     doc.add_paragraph("Retrospective evidence package. No live tracking, predictions, routes, targets, or tactical conclusions.")
     cases = session.query(Case).order_by(Case.id).all()
-    table = doc.add_table(rows=1, cols=5)
-    for idx, title in enumerate(["Case", "Date", "Place", "Coordinates", "Matches"]):
+    table = doc.add_table(rows=1, cols=7)
+    for idx, title in enumerate(["Case", "Date", "Oblast", "Place/reference", "WGS84", "Coord source", "Matches"]):
         table.rows[0].cells[idx].text = title
     for case in cases:
         row = table.add_row().cells
         row[0].text = str(case.id)
         row[1].text = case.event_date.isoformat() if case.event_date else ""
-        row[2].text = case.place_name or ""
-        row[3].text = f"{case.lat}, {case.lon}" if case.lat is not None and case.lon is not None else ""
-        row[4].text = str(len(_case_matches(session, case.id)))
+        row[2].text = case.oblast or ""
+        row[3].text = case.place_name or case.reference_text or ""
+        row[4].text = f"{case.lat}, {case.lon}" if case.lat is not None and case.lon is not None else ""
+        row[5].text = case.coordinate_source or ""
+        row[6].text = str(len(_case_matches(session, case.id)))
     for case in cases:
         doc.add_page_break()
         doc.add_heading(f"Case {case.id}", level=1)
         doc.add_paragraph(case.raw_text)
         doc.add_paragraph(f"Date/time/place: {case.event_date or ''} {case.event_time_local or ''} {case.place_name or ''}")
+        details = doc.add_table(rows=1, cols=2)
+        details.rows[0].cells[0].text = "Field"
+        details.rows[0].cells[1].text = "Value"
+        for title, value in [
+            ("Oblast", case.oblast),
+            ("Place/reference", case.place_name or case.reference_text),
+            ("Reference text", case.reference_text),
+            ("Raw grid northing", case.raw_grid_northing),
+            ("Raw grid easting", case.raw_grid_easting),
+            ("Coordinate source", case.coordinate_source),
+            ("WGS84 lat/lon", f"{case.lat}, {case.lon}" if case.lat is not None and case.lon is not None else None),
+            ("Parser warnings", case.parser_warnings),
+        ]:
+            if value:
+                row = details.add_row().cells
+                row[0].text = title
+                row[1].text = str(value)
         matches = _case_matches(session, case.id)
         mt = doc.add_table(rows=1, cols=6)
         for idx, title in enumerate(["Type", "Priority", "Total", "Time", "Geo", "Explanation"]):
@@ -82,8 +102,22 @@ def build_html_report(session: Session, out_path: Path) -> None:
         "<p>Retrospective evidence package. No live tracking, predictions, routes, targets, or tactical conclusions.</p>",
     ]
     for case in session.query(Case).order_by(Case.id).all():
-        parts.append(f"<h2>Case {case.id}</h2><p>{case.raw_text}</p>")
-        parts.append(f"<p>{case.event_date or ''} {case.event_time_local or ''} {case.place_name or ''}</p>")
+        parts.append(f"<h2>Case {case.id}</h2><p>{html.escape(case.raw_text)}</p>")
+        parts.append(f"<p>{case.event_date or ''} {case.event_time_local or ''} {html.escape(case.place_name or '')}</p>")
+        parts.append("<table><tr><th>Field</th><th>Value</th></tr>")
+        for title, value in [
+            ("Oblast", case.oblast),
+            ("Place/reference", case.place_name or case.reference_text),
+            ("Reference text", case.reference_text),
+            ("Raw grid northing", case.raw_grid_northing),
+            ("Raw grid easting", case.raw_grid_easting),
+            ("Coordinate source", case.coordinate_source),
+            ("WGS84 lat/lon", f"{case.lat}, {case.lon}" if case.lat is not None and case.lon is not None else None),
+            ("Parser warnings", case.parser_warnings),
+        ]:
+            if value:
+                parts.append(f"<tr><td>{html.escape(title)}</td><td>{html.escape(str(value))}</td></tr>")
+        parts.append("</table>")
         parts.append("<table><tr><th>Type</th><th>Priority</th><th>Total</th><th>Explanation</th><th>Link</th></tr>")
         for match in _case_matches(session, case.id):
             link = ""
@@ -145,4 +179,3 @@ def export_report(session: Session, job_id: int | None = None, source_docx: str 
     session.add(export)
     session.flush()
     return export
-

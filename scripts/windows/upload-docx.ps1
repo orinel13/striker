@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$ServerUrl,
   [Parameter(Mandatory=$true)][string]$ApiToken,
-  [Parameter(Mandatory=$true)][string]$FilePath
+  [Parameter(Mandatory=$true)][string]$FilePath,
+  [string]$DocumentDate = ""
 )
 
 if (!(Test-Path -LiteralPath $FilePath)) { throw "File does not exist: $FilePath" }
@@ -9,7 +10,9 @@ if ([IO.Path]::GetExtension($FilePath).ToLowerInvariant() -ne ".docx") { throw "
 
 $base = $ServerUrl.TrimEnd("/")
 $headers = @{ Authorization = "Bearer $ApiToken" }
-$response = Invoke-RestMethod -Method Post -Uri "$base/api/documents/upload" -Headers $headers -Form @{ file = Get-Item -LiteralPath $FilePath }
+$form = @{ file = Get-Item -LiteralPath $FilePath }
+if ($DocumentDate) { $form.document_date = $DocumentDate }
+$response = Invoke-RestMethod -Method Post -Uri "$base/api/documents/upload" -Headers $headers -Form $form
 Write-Host "job_id=$($response.job_id)"
 
 while ($true) {
@@ -24,4 +27,3 @@ while ($true) {
     throw "Job failed: $($job.error)"
   }
 }
-

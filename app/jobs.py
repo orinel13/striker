@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -19,8 +20,14 @@ from app.telegram.collector import collect_once
 logger = logging.getLogger(__name__)
 
 
-def create_job(session: Session, kind: str, input_path: str | None = None) -> Job:
-    job = Job(kind=kind, input_path=input_path, status="queued", progress=0)
+def create_job(session: Session, kind: str, input_path: str | None = None, params: dict | None = None) -> Job:
+    job = Job(
+        kind=kind,
+        input_path=input_path,
+        params_json=json.dumps(params, ensure_ascii=False) if params else None,
+        status="queued",
+        progress=0,
+    )
     session.add(job)
     session.flush()
     return job
@@ -41,8 +48,11 @@ def run_job(session: Session, job: Job) -> None:
         if job.kind in {"process-docx", "import-docx"}:
             if not job.input_path or not Path(job.input_path).exists():
                 raise RuntimeError("Job input .docx does not exist")
+            params = json.loads(job.params_json or "{}")
+            document_date = date.fromisoformat(params["document_date"]) if params.get("document_date") else None
+            default_year = int(params["default_year"]) if params.get("default_year") else None
             _update(session, job, 10, "import-docx")
-            import_docx(session, job.input_path)
+            import_docx(session, job.input_path, document_date=document_date, default_year=default_year)
             session.commit()
             _update(session, job, 30, "fetch-firms")
             fetch_firms_for_all_cases(session)
