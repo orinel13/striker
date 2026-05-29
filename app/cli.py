@@ -148,7 +148,7 @@ def cmd_render_evidence(_args) -> None:
 def cmd_export_report(_args) -> None:
     init_db()
     with session_scope() as session:
-        export = export_report(session)
+        export = export_report(session, style=_args.style, include_technical_appendix=_args.include_technical_appendix)
         print(export.zip_path)
 
 
@@ -254,13 +254,16 @@ def build_parser() -> argparse.ArgumentParser:
         "fetch-firms": (cmd_fetch_firms, []),
         "match-cases": (cmd_match_cases, []),
         "render-evidence": (cmd_render_evidence, []),
-        "export-report": (cmd_export_report, []),
         "run-web": (cmd_run_web, []),
         "cleanup-exports": (cmd_cleanup_exports, []),
     }
     for name, (func, _opts) in commands.items():
         p = sub.add_parser(name)
         p.set_defaults(func=func)
+    p = sub.add_parser("export-report")
+    p.add_argument("--style", choices=["osint", "technical"], default="osint")
+    p.add_argument("--include-technical-appendix", action="store_true")
+    p.set_defaults(func=cmd_export_report)
     p = sub.add_parser("load-places")
     p.add_argument("path", nargs="?", default="data/places_extra.csv")
     p.set_defaults(func=cmd_load_places)

@@ -197,6 +197,10 @@ def exports(request: Request, session: Session = Depends(db_session)):
 
 
 def _export_path(export: Export, file: str) -> tuple[str | None, str]:
+    if file == "technical":
+        if export.docx_path:
+            return str(Path(export.docx_path).parent / "technical_report.docx"), "technical_report.docx"
+        return None, "technical_report.docx"
     if file == "docx":
         return export.docx_path, "report.docx"
     if file == "html":

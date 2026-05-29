@@ -13,6 +13,8 @@ def render_firms_map_html(session: Session, case: Case) -> str | None:
     if case.lat is None or case.lon is None:
         return None
     points = nearby_firms_points(session, case)
+    if not points:
+        return None
     markers = "\n".join(
         f"L.marker([{p.lat},{p.lon}]).addTo(map).bindPopup({html.escape(repr(f'{p.acq_date} {p.acq_time} {p.satellite} confidence={p.confidence} FRP={p.frp}'))});"
         for p in points
@@ -51,4 +53,3 @@ async def screenshot_map(html_path: str) -> str | None:
         return str(output)
     except Exception:
         return html_path
-

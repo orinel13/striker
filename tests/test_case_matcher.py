@@ -27,7 +27,7 @@ def test_case_matcher_creates_priority_a(session):
     msg = Message(
         channel_id=channel.id,
         tg_message_id=1,
-        posted_at=datetime(2024, 5, 12, 3, 10),
+        posted_at=datetime(2024, 5, 12, 0, 10),
         collected_at=datetime.utcnow() - timedelta(days=1),
         text=text,
         normalized_text=norm,

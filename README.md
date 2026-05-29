@@ -109,6 +109,18 @@ PowerShell workflow:
 ./scripts/windows/open-striker-ui.ps1 -ServerUrl "https://domain-or-ip"
 ```
 
+## Типы отчётов
+
+- `report.docx` — основной OSINT-отчёт по Telegram-публикациям, сгруппированный по населённым пунктам.
+- `technical_report.docx` — техническая диагностика кейсов, координат, FIRMS и scoring; используется для проверки парсинга и сопоставления.
+- `evidence.zip` — пакет с отчётами, скриншотами, картами, исходным `.docx` и metadata.
+
+По умолчанию `python -m app.cli export-report` создаёт OSINT-отчёт. Технический режим:
+
+```bash
+python -m app.cli export-report --style technical
+```
+
 ## Импорт табличных актов ударов
 
 Для актов в таблицах `.docx` сначала проверь распознавание строк без записи в базу:

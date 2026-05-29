@@ -25,6 +25,30 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;margin:0;padding:24px}}
 </div></body></html>"""
 
 
+async def render_evidence_card_png(session, message: Message, case_id: int | None = None) -> str | None:
+    channel = session.get(Channel, message.channel_id)
+    if not channel:
+        return None
+    Path("data/screenshots").mkdir(parents=True, exist_ok=True)
+    Path("data/tmp").mkdir(parents=True, exist_ok=True)
+    html_path = Path("data/tmp") / f"telegram_card_{message.id}.html"
+    output = Path("data/screenshots") / f"telegram_card_{message.id}.png"
+    html_path.write_text(evidence_card_html(channel, message), encoding="utf-8")
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch()
+            page = await browser.new_page(viewport={"width": 1000, "height": 760})
+            await page.goto(html_path.resolve().as_uri(), wait_until="load")
+            await page.screenshot(path=str(output), full_page=True)
+            await browser.close()
+        session.add(EvidenceFile(case_id=case_id, message_id=message.id, file_type="telegram_card", path=str(output)))
+        return str(output)
+    except Exception:
+        return None
+
+
 async def screenshot_message(session, message: Message) -> str | None:
     channel = session.get(Channel, message.channel_id)
     if not channel:
@@ -45,12 +69,14 @@ async def screenshot_message(session, message: Message) -> str | None:
                 await page.screenshot(path=str(output), full_page=True)
             except Exception:
                 fallback.write_text(evidence_card_html(channel, message), encoding="utf-8")
+                output = Path("data/screenshots") / f"telegram_card_{message.id}.png"
                 await page.goto(fallback.resolve().as_uri(), wait_until="load")
                 await page.screenshot(path=str(output), full_page=True)
+                await browser.close()
+                session.add(EvidenceFile(message_id=message.id, file_type="telegram_card", path=str(output)))
+                return str(output)
             await browser.close()
         session.add(EvidenceFile(message_id=message.id, file_type="telegram_screenshot", path=str(output)))
         return str(output)
     except Exception:
-        fallback.write_text(evidence_card_html(channel, message), encoding="utf-8")
-        return str(fallback)
-
+        return await render_evidence_card_png(session, message)
